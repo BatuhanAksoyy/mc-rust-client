@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! wgpu renderer shell. See `docs/RENDER.md`.
 
+mod app;
+pub mod camera;
+pub mod mesh;
+mod renderer;
+
+pub use app::{RunError, run};
+pub use renderer::{Renderer, RendererError};
+
 /// Rendering backend selection. `wgpu` picks the best available
 /// (Vulkan/Metal/DX12/GL) — mirrors vanilla 26.2 Default/GL/Vulkan option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

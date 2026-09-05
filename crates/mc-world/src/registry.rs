@@ -28,6 +28,14 @@ impl BlockRegistry {
         Self { names: Arc::from(Vec::new().into_boxed_slice()) }
     }
 
+    /// Build a registry directly from an ID-indexed name list (index = state
+    /// ID), independent of the cache or JSON: useful for synthetic fixtures,
+    /// and for a registry sourced some other way in the future.
+    #[must_use]
+    pub fn from_names(names: Vec<String>) -> Self {
+        Self { names: names.into_iter().map(String::into_boxed_str).collect() }
+    }
+
     /// Load `<cache>/mc-rust-client/<version>/block-states.json`
     /// (`docs/WORLD_PHYSICS_ASSETS.md`). Never fails: an absent or malformed
     /// cache falls back to [`Self::empty`], since this client does not
@@ -47,7 +55,7 @@ impl BlockRegistry {
     /// directory or filesystem — the seam integration tests exercise.
     fn from_report_json(text: &str) -> Option<Self> {
         let report: CachedReport = serde_json::from_str(text).ok()?;
-        Some(Self { names: report.names.into_iter().map(String::into_boxed_str).collect() })
+        Some(Self::from_names(report.names))
     }
 
     /// This block-state ID's namespaced name, if the registry has it.
