@@ -37,11 +37,15 @@ scripts/            # shell helpers (fetch only to cache dir, never into repo)
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo xtask verify-manifest --version 26.2   # network, cache-only, verifies SHA1
-cargo xtask fetch-reference --help           # downloads client.jar to $CACHE only
+cargo xtask verify-manifest --version 26.2   # prints pinned metadata (placeholder)
+cargo xtask fetch-reference --help           # cache instructions (placeholder)
 ```
 
 ## Toolchain
+
+The Rust launcher/fetch commands are placeholders; only `scripts/fetch-26.2.sh`
+currently downloads references. See `docs/FOUNDATION.md` for the implementation
+contract and remaining phases.
 
 - Stable Rust >= 1.97 (see `rust-toolchain.toml`), edition 2024.
 - Targets: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`.

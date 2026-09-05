@@ -12,28 +12,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Verify pinned 26.2 manifest + hashes (network, no jar download).
+    /// Show pinned manifest + hashes (placeholder; does not fetch or verify).
     VerifyManifest {
-        #[arg(long, default_value = "26.2")]
+        #[arg(long, default_value = "26.2", value_parser = ["26.2"])]
         version: String,
     },
-    /// Download client/server jar to cache dir only (verifies SHA1).
+    /// Show cache download instructions (placeholder; does not download).
     FetchReference {
-        #[arg(long, default_value = "26.2")]
+        #[arg(long, default_value = "26.2", value_parser = ["26.2"])]
         version: String,
-        #[arg(long, default_value = "client")]
+        #[arg(long, default_value = "client", value_parser = ["client", "server"])]
         side: String,
         #[arg(long)]
         cache: Option<PathBuf>,
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::VerifyManifest { version } => {
-            assert_eq!(version, "26.2", "only 26.2 is pinned in v1");
+            println!("Pinned reference for {version} (no verification performed):");
             println!("manifest: {}", mc_launcher::VERSION_26_2_URL);
             println!("client sha1: {}", mc_launcher::CLIENT_SHA1_26_2);
             println!("server sha1: {}", mc_launcher::SERVER_SHA1_26_2);
@@ -42,13 +41,17 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         Cmd::FetchReference { version, side, cache } => {
-            let dir = cache.unwrap_or_else(|| {
-                let base =
-                    std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-                        PathBuf::from(format!("{}/.cache", std::env::var("HOME").unwrap()))
-                    });
-                base.join("mc-rust-client").join(version)
-            });
+            let dir = cache
+                .or_else(|| {
+                    std::env::var_os("XDG_CACHE_HOME")
+                        .or_else(|| std::env::var_os("LOCALAPPDATA"))
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache"))
+                        })
+                        .map(|base| base.join("mc-rust-client").join(version))
+                })
+                .ok_or("No cache directory available; provide --cache")?;
             println!("cache dir: {} (side: {})", dir.display(), side);
             println!(
                 "Use scripts/fetch-26.2.sh; full async downloader lands with mc-launcher (P1)."

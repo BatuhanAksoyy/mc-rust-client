@@ -2,14 +2,10 @@
 name = "mc-launcher"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Version resolve + cache-only asset bootstrap (never vendors jars)"
 
-[dependencies]
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.13", features = ["json", "rustls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha1 = "0.11"
-clap = { version = "4", features = ["derive"] }
-mc-auth = { path = "../mc-auth" }
+[lints]
+workspace = true

@@ -2,17 +2,10 @@
 name = "mc-client"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Game loop, 20 TPS tick, input, audio, UI orchestration"
 
-[dependencies]
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-mc-protocol = { path = "../mc-protocol" }
-mc-auth = { path = "../mc-auth" }
-mc-world = { path = "../mc-world" }
-mc-render = { path = "../mc-render" }
-
-[dev-dependencies]
-criterion = "0.8"
+[lints]
+workspace = true

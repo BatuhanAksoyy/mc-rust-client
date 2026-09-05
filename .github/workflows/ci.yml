@@ -23,7 +23,9 @@ jobs:
       - name: test
         run: cargo test --workspace --all-features
       - name: doc
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
       - name: no jars/classes committed
         shell: bash
         run: |

@@ -6,6 +6,10 @@
 
 ## Order (each = one PR, one test suite)
 
+The first usable foundation is scoped and verified by `FOUNDATION.md`; it delivers
+the transport/status path before NBT and login. Follow-up work resumes the order
+below. Declared future-phase dependencies are added when their code lands.
+
 1. `mc-protocol` primitives: VarInt, String, NBT, Position. Property tests. ✅ VarInt done.
 2. Packet framing + compression skeleton (no encryption yet — offline servers skip it).
 3. Handshake + Status ping against local dummy server (integration test).

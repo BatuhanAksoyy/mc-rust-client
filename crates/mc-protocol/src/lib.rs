@@ -8,22 +8,27 @@ use thiserror::Error;
 /// Supported protocol version for 26.2.
 pub const PROTOCOL_VERSION: i32 = 776;
 
-/// Max bytes for a VarInt length/ID field.
+/// Max bytes for a `VarInt` length/ID field.
 pub const MAX_VARINT_BYTES: usize = 5;
 /// Max packet size (2^21 - 1).
 pub const MAX_PACKET_SIZE: usize = 2_097_151;
 
+/// Invalid or incomplete protocol input.
 #[derive(Debug, Error)]
 pub enum CodecError {
+    /// A `VarInt` exceeded its maximum encoded width.
     #[error("varint too long (>{MAX_VARINT_BYTES} bytes)")]
     VarIntTooLong,
+    /// More bytes are required to decode the value.
     #[error("unexpected end of input")]
     UnexpectedEof,
+    /// A frame exceeds the supported wire size.
     #[error("packet too large: {0} bytes")]
     PacketTooLarge(usize),
 }
 
-/// Encode non-negative `i32` as unsigned VarInt (protocol IDs/lengths).
+/// Encode non-negative `i32` as unsigned `VarInt` (protocol IDs/lengths).
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn encode_varint(value: i32, out: &mut Vec<u8>) {
     debug_assert!(value >= 0, "protocol VarInt values are non-negative");
     let mut v = value as u32;
@@ -40,12 +45,13 @@ pub fn encode_varint(value: i32, out: &mut Vec<u8>) {
     }
 }
 
-/// Decode unsigned VarInt, returning `(value, bytes_read)`.
+/// Decode unsigned `VarInt`, returning `(value, bytes_read)`.
+#[allow(clippy::cast_possible_wrap)]
 pub fn decode_varint(input: &[u8]) -> Result<(i32, usize), CodecError> {
     let mut num: u32 = 0;
     for i in 0..MAX_VARINT_BYTES {
         let byte = *input.get(i).ok_or(CodecError::UnexpectedEof)?;
-        num |= ((byte & 0x7F) as u32) << (7 * i);
+        num |= u32::from(byte & 0x7F) << (7 * i);
         if byte & 0x80 == 0 {
             return Ok((num as i32, i + 1));
         }
@@ -59,10 +65,10 @@ mod tests {
 
     #[test]
     fn varint_roundtrip_boundaries() {
-        for v in [0, 1, 127, 128, 255, 2097151, 2147483647i32] {
+        for v in [0, 1, 127, 128, 255, 2_097_151, i32::MAX] {
             let mut buf = Vec::new();
             encode_varint(v, &mut buf);
-            assert!(buf.len() <= 3 || v > 2097151, "length field must be <= 3 bytes for packets");
+            assert!(buf.len() <= 3 || v > 2_097_151, "length field must be <= 3 bytes for packets");
             let (d, n) = decode_varint(&buf).unwrap();
             assert_eq!((v, buf.len()), (d, n));
         }
@@ -73,7 +79,7 @@ mod tests {
         let bad = [0x80u8; 6];
         assert!(matches!(
             decode_varint(&bad),
-            Err(CodecError::VarIntTooLong) | Err(CodecError::UnexpectedEof)
+            Err(CodecError::VarIntTooLong | CodecError::UnexpectedEof)
         ));
     }
 }

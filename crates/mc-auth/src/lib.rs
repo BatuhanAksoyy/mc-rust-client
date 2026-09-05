@@ -3,10 +3,14 @@
 
 use zeroize::Zeroize;
 
+/// Ownership outcome used by the future authentication flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
+    /// A permanent game entitlement.
     FullGame,
+    /// A profile exists through a subscription.
     GamePassProfileOnly,
+    /// No entitlement was found.
     None,
 }
 
@@ -15,9 +19,13 @@ pub enum Ownership {
 pub struct RedactedString(String);
 
 impl RedactedString {
-    pub fn new(s: String) -> Self {
+    /// Wrap a secret and erase its owned buffer on drop.
+    #[must_use]
+    pub const fn new(s: String) -> Self {
         Self(s)
     }
+    /// Explicitly borrow the secret; callers must never log this value.
+    #[must_use]
     pub fn expose(&self) -> &str {
         &self.0
     }
