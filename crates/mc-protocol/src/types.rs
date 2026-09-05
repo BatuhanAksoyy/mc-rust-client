@@ -94,6 +94,28 @@ impl<'a> Reader<'a> {
         }
         Ok(value)
     }
+
+    /// Read a nonnegative collection size bounded by caller allocation policy.
+    pub fn count(&mut self, maximum: usize) -> Result<usize, CodecError> {
+        let count = usize::try_from(self.varint()?).map_err(|_| CodecError::InvalidLength)?;
+        if count > maximum { Err(CodecError::InvalidLength) } else { Ok(count) }
+    }
+
+    /// Read a namespaced identifier. An omitted namespace means `minecraft`.
+    pub fn identifier(&mut self) -> Result<&'a str, CodecError> {
+        let value = self.string(32_767)?;
+        let (namespace, path) = value.split_once(':').unwrap_or(("minecraft", value));
+        let valid =
+            |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte);
+        if namespace.is_empty()
+            || path.is_empty()
+            || !namespace.bytes().all(valid)
+            || !path.bytes().all(|byte| valid(byte) || byte == b'/')
+        {
+            return Err(CodecError::InvalidValue("identifier"));
+        }
+        Ok(value)
+    }
 }
 
 /// Append a UTF-8 string after validating its UTF-16 length. Errors do not write.

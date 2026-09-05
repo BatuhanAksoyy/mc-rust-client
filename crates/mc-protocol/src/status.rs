@@ -24,11 +24,15 @@ pub const MAX_JSON_UNITS: usize = 32_767;
 
 /// Encode an intention packet for the status state (intent = 1).
 pub fn handshake(host: &str, port: u16) -> Result<Vec<u8>, CodecError> {
+    intention(host, port, 1)
+}
+
+pub(crate) fn intention(host: &str, port: u16, intent: i32) -> Result<Vec<u8>, CodecError> {
     let mut body = Vec::new();
     encode_varint(PROTOCOL_VERSION, &mut body);
     encode_string(host, MAX_HOST_UNITS, &mut body)?;
     body.extend_from_slice(&port.to_be_bytes());
-    encode_varint(1, &mut body);
+    encode_varint(intent, &mut body);
     Ok(body)
 }
 

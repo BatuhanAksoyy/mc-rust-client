@@ -4,9 +4,12 @@
 //! Contract: `docs/FOUNDATION.md` and `docs/PROTOCOL-776.md`.
 //! Wire reference: [Java Edition packets](https://minecraft.wiki/w/Java_Edition_protocol/Packets).
 
+pub mod configuration;
 mod error;
 pub mod framing;
+pub mod login;
 pub mod nbt;
+pub mod play;
 pub mod status;
 pub mod types;
 mod varint;

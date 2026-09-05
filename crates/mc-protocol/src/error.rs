@@ -3,6 +3,9 @@ use thiserror::Error;
 /// Invalid or incomplete protocol input. Packet errors terminate the connection.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CodecError {
+    /// A field violates its declared value domain.
+    #[error("invalid field: {0}")]
+    InvalidValue(&'static str),
     /// A `VarInt` exceeded five bytes.
     #[error("VarInt exceeds five bytes")]
     VarIntTooLong,
