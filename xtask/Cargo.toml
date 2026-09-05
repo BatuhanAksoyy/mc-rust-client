@@ -16,4 +16,4 @@ workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-mc-launcher = { path = "../crates/mc-launcher" }
+mc-launcher = { version = "0.1.0", path = "../crates/mc-launcher" }
