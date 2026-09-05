@@ -6,6 +6,7 @@
 
 mod error;
 pub mod framing;
+pub mod nbt;
 pub mod status;
 pub mod types;
 mod varint;

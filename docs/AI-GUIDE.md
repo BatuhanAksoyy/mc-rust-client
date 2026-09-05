@@ -15,7 +15,8 @@ the transport/status path before NBT and login. Follow-up work resumes the order
 below. Declared future-phase dependencies are added when their code lands.
 
 1. `mc-protocol` primitives: signed VarInt/VarLong, String, Position and fixed-width
-   reads have property/vector tests. NBT and remaining P1 types are next.
+   reads have property/vector tests. Bounded NBT decoding follows `NBT.md`;
+   encoding and remaining P1 types are separate follow-ups.
 2. Packet framing + bounded zlib implemented (no encryption yet).
 3. Handshake + Status ping implemented against a local dummy TCP server; run
    `cargo run -p mc-client -- status localhost`.

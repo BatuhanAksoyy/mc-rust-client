@@ -3,9 +3,22 @@ use std::hint::black_box;
 
 use bytes::BytesMut;
 use criterion::{Criterion, criterion_group, criterion_main};
+use mc_protocol::nbt::{Limits, decode_network};
 use mc_protocol::{decode_varint, encode_varint, framing::FrameCodec};
 
 fn codecs(c: &mut Criterion) {
+    // Synthetic registry-shaped compound: 128 named integer-list entries.
+    let mut nbt = vec![10];
+    for _ in 0..128 {
+        nbt.extend_from_slice(&[9, 0, 3, b'k', b'e', b'y', 3, 0, 0, 0, 16]);
+        for value in 0_i32..16 {
+            nbt.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    nbt.push(0);
+    c.bench_function("nbt_decode_compound_128_lists", |b| {
+        b.iter(|| black_box(decode_network(black_box(&nbt), Limits::default()).unwrap()));
+    });
     c.bench_function("signed_varint_roundtrip", |b| {
         let mut output = Vec::with_capacity(5);
         b.iter(|| {

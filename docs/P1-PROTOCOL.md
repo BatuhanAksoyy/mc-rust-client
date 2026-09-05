@@ -1,6 +1,7 @@
 # P1-PROTOCOL.md — implementation contract for `mc-protocol` (next step)
 
-Target: join an **offline** vanilla 26.2 server (headless, no auth, no encryption).
+Target: join an **offline** Pumpkin 26.2 server (headless, no auth, no encryption).
+Vanilla is an optional compatibility reference; see `SINGLEPLAYER.md`.
 
 ## Reference inputs (all in `$CACHE/mc-rust-client/`, never in repo)
 
@@ -19,8 +20,10 @@ Target: join an **offline** vanilla 26.2 server (headless, no auth, no encryptio
    String (VarInt-prefixed UTF-8, UTF-16 length semantics), Identifier, UUID, Position
    (26/26/12), Angle, BitSet/Fixed BitSet, Prefixed Array/Optional, ID-or-X, ID Set.
    Tests: wiki sample vectors (VarInt table incl. negatives) + proptest round-trips.
-2. **NBT** (`nbt.rs`): all tags, network (uncompressed, rootless) vs disk variants.
-   Tests: round-trip + fixtures from cache `data/` (e.g. a small loot table file).
+2. **NBT** (`nbt/`): all tags, network (uncompressed, unnamed root) vs named roots.
+   The root type byte is retained. Bounded decoding is specified in `NBT.md`;
+   encoding/round-trips remain follow-up work. Use synthetic binary fixtures;
+   loot-table JSON is not a binary NBT fixture. Disk compression is out of scope.
 3. **Framing** (`framing.rs`): length-prefixed packets, 2 MiB cap, compression
    (`login_compression` threshold, zlib) — encryption stubbed (offline skips it).
 4. **Status ping** (`status.rs`): handshake(intent=1) + `status_request` → parse

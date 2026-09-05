@@ -23,3 +23,17 @@ settings before changing hot paths. Full machine-local results are under
 Current design avoids copies for decoded uncompressed payloads and borrows string
 fields. Both are tested invariants. Allocation and decompression limits protect
 against oversized input; boundedness is independent of benchmark timings.
+
+## NBT client-decoder baseline
+
+2026-09-06, same platform/toolchain/profile. Run the command above with the
+`nbt_decode` filter. A synthetic 9,602-byte compound contains 128 duplicate-named
+entries, each a list of 16 integers (2,561 allocation units in total).
+
+| Operation | Criterion estimate interval |
+|---|---|
+| Decode compound with 128 integer lists, including owned tree drop | 28.49–28.57 µs |
+
+Fixture construction is outside timing. This measures bounded tree decoding and
+allocation, not real registry/chunk throughput. There is no previous NBT decoder
+to compare against; this is not an optimization or a Rust-versus-Java comparison.
