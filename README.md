@@ -41,7 +41,7 @@ cargo xtask fetch-reference --help           # downloads client.jar to $CACHE on
 
 ## Toolchain
 
-- Stable Rust >= 1.85 (see `rust-toolchain.toml`), edition 2021.
+- Stable Rust >= 1.97 (see `rust-toolchain.toml`), edition 2024.
 - Targets: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`.
 - Renderer: `wgpu` (portable Vulkan/Metal/DX12/GL). No Bevy engine dependency in v1.
 

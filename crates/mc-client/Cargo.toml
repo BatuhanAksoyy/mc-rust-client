@@ -1,7 +1,7 @@
 [package]
 name = "mc-client"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Game loop, 20 TPS tick, input, audio, UI orchestration"
 
 [dependencies]
@@ -15,4 +15,4 @@ mc-world = { path = "../mc-world" }
 mc-render = { path = "../mc-render" }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"

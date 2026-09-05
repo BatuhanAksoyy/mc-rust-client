@@ -1,15 +1,15 @@
 [package]
 name = "mc-launcher"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Version resolve + cache-only asset bootstrap (never vendors jars)"
 
 [dependencies]
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 clap = { version = "4", features = ["derive"] }
 mc-auth = { path = "../mc-auth" }

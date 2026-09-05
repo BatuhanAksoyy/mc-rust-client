@@ -1,11 +1,11 @@
 [package]
 name = "mc-world"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Blocks, chunks, lighting data structures (no rendering, no network)"
 
 [dependencies]
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-hashbrown = "0.15"
-glam = "0.30"
+hashbrown = "0.17"
+glam = "0.33"

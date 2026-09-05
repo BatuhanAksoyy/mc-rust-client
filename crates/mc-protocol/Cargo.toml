@@ -1,7 +1,7 @@
 [package]
 name = "mc-protocol"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Minecraft Java protocol 776 codecs (VarInt, NBT, packets). No Mojang code."
 
 [dependencies]

@@ -11,7 +11,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -23,7 +23,7 @@ jobs:
       - name: test
         run: cargo test --workspace --all-features
       - name: doc
-        run: cargo doc --workspace --no-deps --deny warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       - name: no jars/classes committed
         shell: bash
         run: |
@@ -34,7 +34,7 @@ jobs:
   deny-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: EmbarkStudios/cargo-deny-action@v2
