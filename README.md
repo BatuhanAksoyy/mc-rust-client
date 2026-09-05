@@ -34,6 +34,7 @@ scripts/            # shell helpers (fetch only to cache dir, never into repo)
 ## Quick start (does not download game files into repo)
 
 ```sh
+cargo run -p mc-client -- status localhost --port 25565 --timeout-ms 5000
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -41,11 +42,25 @@ cargo xtask verify-manifest --version 26.2   # prints pinned metadata (placehold
 cargo xtask fetch-reference --help           # cache instructions (placeholder)
 ```
 
-## Toolchain
+The status command prints server JSON to stdout and ping latency to stderr;
+failures return a nonzero exit code. It needs a reachable Java Edition server
+with status enabled, but no account or assets. It does not log into the world.
+
+Implemented: bounded signed protocol primitives, incremental frames and zlib,
+Handshake/Status/Ping, and a deterministic 20 TPS scheduler with bounded catch-up.
+The remaining crates retain their data/API shells. See
+[`docs/FOUNDATION.md`](docs/FOUNDATION.md) for scope and
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the synthetic codec baseline.
+
+```sh
+cargo bench -p mc-protocol --bench codecs
+```
 
 The Rust launcher/fetch commands are placeholders; only `scripts/fetch-26.2.sh`
 currently downloads references. See `docs/FOUNDATION.md` for the implementation
 contract and remaining phases.
+
+## Toolchain
 
 - Stable Rust >= 1.97 (see `rust-toolchain.toml`), edition 2024.
 - Targets: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`.

@@ -2,6 +2,7 @@
 //! Game orchestration: fixed 20 TPS tick + interpolated render. See `docs/WORLD_PHYSICS_ASSETS.md`.
 
 pub mod status;
+pub mod tick;
 
 /// Ticks per second — vanilla parity.
 pub const TPS: u32 = 20;

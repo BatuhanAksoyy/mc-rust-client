@@ -62,7 +62,22 @@ Reference: [protocol definitions and packets](https://minecraft.wiki/w/Java_Edit
   Excess whole ticks are reported as dropped time while preserving the sub-tick
   remainder. This is local overload policy, not a claim of vanilla physics parity.
 
-## Follow-up order
+## Verification record (2026-09-05)
+
+- 29 tests pass on aarch64 macOS, including 4 real loopback TCP tests, 4
+  deterministic scheduler tests, and 21 protocol vector/property tests.
+- Workspace fmt, strict Clippy (including all targets/features), and rustdoc
+  checks pass. Lints are inherited by every crate.
+- `cargo deny check` and `cargo audit` pass with the current advisory database
+  (111 dependencies). Deny reports only unused pre-existing license allowances.
+- Criterion baseline is recorded in `PERFORMANCE.md`; no speedup is claimed.
+- CI retains Linux/macOS/Windows jobs and portable rustdoc environment setup.
+  Remote CI and a vanilla-server exchange were not run for this change.
+- No jars, assets, secrets, or mappings are added. No dependency-wide
+  `cargo update` was run: the lockfile reflects removal of unused dependencies
+  and addition of the implemented codecs/client/benchmarks.
+
+## Next implementation
 
 Complete the remaining P1 primitives and bounded NBT, then implement offline
 Login → Configuration → Play against a vanilla server. Keep registry data and

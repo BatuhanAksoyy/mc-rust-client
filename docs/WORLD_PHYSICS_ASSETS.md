@@ -11,6 +11,11 @@
 ## PHYSICS / TICK (`mc-client`)
 
 - Tick 20 TPS fixed timestep, render interpolation; network on `tokio`.
+- SPEC: the foundation scheduler accepts elapsed durations and a nonzero maximum
+  catch-up count. It returns whole ticks to execute, interpolation in [0, 1), and
+  dropped whole-tick time when overloaded. It preserves fractional time exactly,
+  owns no wall clock, and never sleeps. This policy is tested separately from
+  future movement/physics parity. See `FOUNDATION.md`.
 - Re-implement from observation + wiki, verified by tests:
   - Movement: sprint 5.6 m/s, walk 4.3, sneak 1.3, jump vY 0.42, gravity 0.08/tick, drag 0.98/0.91.
   - Collision: AABB vs voxel grid, step, fluids, ladders (add per-behavior tests).
