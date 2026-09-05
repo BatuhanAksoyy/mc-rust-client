@@ -12,8 +12,12 @@ workspace = true
 
 [dependencies]
 mc-protocol = { version = "0.1.0", path = "../mc-protocol" }
+mc-launcher = { version = "0.1.0", path = "../mc-launcher" }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "time", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"

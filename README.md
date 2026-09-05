@@ -35,6 +35,7 @@ scripts/            # shell helpers (fetch only to cache dir, never into repo)
 
 ```sh
 cargo run -p mc-client -- status localhost --port 25565 --timeout-ms 5000
+cargo run -p mc-client -- local --pumpkin /path/to/pumpkin --session /outside/repo/session --check
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -45,6 +46,13 @@ cargo xtask fetch-reference --help           # cache instructions (placeholder)
 The status command prints server JSON to stdout and ping latency to stderr;
 failures return a nonzero exit code. It needs a reachable Java Edition server
 with status enabled, but no account or assets. It does not log into the world.
+
+The `local` command manages the pinned Pumpkin server without Java. Remove
+`--check` to keep it running until Ctrl-C. The executable must be downloaded
+separately; its release checksum is verified before launch. World data is kept
+outside the repository. This currently verifies server startup/status/shutdown;
+the client does not yet join or render a playable world. See
+[singleplayer setup](docs/SINGLEPLAYER.md).
 
 Implemented: bounded signed protocol primitives, incremental frames and zlib,
 Handshake/Status/Ping, and a deterministic 20 TPS scheduler with bounded catch-up.
