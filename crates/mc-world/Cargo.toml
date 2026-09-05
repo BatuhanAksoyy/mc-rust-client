@@ -9,3 +9,8 @@ description = "Blocks, chunks, lighting data structures (no rendering, no networ
 
 [lints]
 workspace = true
+
+[dependencies]
+mc-protocol = { version = "0.1.0", path = "../mc-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
