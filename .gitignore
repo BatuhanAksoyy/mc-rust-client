@@ -1,0 +1,21 @@
+# Never commit these — legal + hygiene
+/target/
+/xtask/target/
+**/target/
+.DS_Store
+*.jar
+*.class
+decompiled/
+reference/
+.minecraft/
+*.log
+.env
+/client.jar
+/server.jar
+/assets/
+/objects/
+# secrets
+tokens.json
+azp-credentials.json
+# caches (fetch scripts use these OUTSIDE repo by default)
+.cache/
