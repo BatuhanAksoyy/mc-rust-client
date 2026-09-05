@@ -20,14 +20,19 @@ below. Declared future-phase dependencies are added when their code lands.
 2. Packet framing + bounded zlib implemented (no encryption yet).
 3. Handshake + Status ping implemented against a local dummy TCP server; run
    `cargo run -p mc-client -- status localhost`.
-4. Login offline → Configuration → Play spawn against managed Pumpkin 26.2.
-   `JOIN.md` scopes the first headless increment through decoded Play Login;
-   spawn confirmation, chunks and rendering remain separate steps.
+4. **Done.** Login offline → Configuration → Play spawn confirmation → initial chunk
+   batch, against managed Pumpkin 26.2. `JOIN.md` covers the wire contract.
    Vanilla remains an optional compatibility reference, not a Java runtime requirement.
-5. `mc-world` chunk types + mesher input structs (registries from cache fixtures).
-6. `mc-render` cube → chunk → atlas (synthetic data first, cache textures later).
+5. **Done.** `mc-world`: `Chunk` resolves a decoded `LevelChunk`'s paletted containers
+   into dense block-ID arrays; `BlockRegistry` maps IDs to names/colors from an
+   optional generated cache (`WORLD_PHYSICS_ASSETS.md`).
+6. **Done.** `mc-render` cube → chunk → window (`RENDER.md` milestones 1-2): synthetic
+   per-block colors, no assets required yet. `mc-client render <host>` joins, meshes
+   the first received chunk, and shows it — verified against a live Pumpkin server.
+   A texture atlas from cached assets (`RENDER.md` milestone 3) is later work.
 7. `mc-client` tick loop + movement physics tests.
-8. Full join: config → play → render first chunk → move (still offline).
+8. Full join loop: continuous chunk streaming as the player moves, camera/movement
+   input replacing the static orbit camera (still offline).
 9. Perf pass + cross-platform CI.
 10. LAST: `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI) + legal review.
 

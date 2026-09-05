@@ -20,9 +20,18 @@ we skip the engine overhead for chunk-meshing hot loops and exact timing control
 - `Frame`: uniform buffers (view/proj, fog, time), draw indirect where measurable.
 
 Milestones:
-1. Triangle → textured cube (wgpu example parity).
-2. Single chunk render from synthetic data (no assets needed).
+1. **Done.** Triangle → textured cube (wgpu example parity) — folded into milestone 2's
+   pipeline directly rather than as a separate throwaway example.
+2. **Done.** Single chunk render from synthetic data (no assets needed). `mesh::mesh_chunk`
+   culls internal faces and bakes a fixed per-face brightness (no atlas, no real lighting
+   yet); `renderer::Renderer` owns the wgpu device/surface/pipeline; `camera::OrbitCamera`
+   is a fixed-radius orbit (no look/move input yet — that's `mc-client`'s tick loop,
+   `WORLD_PHYSICS_ASSETS.md`). `mc-client render <host>` wires it to a live join.
+   Verified against a real local Pumpkin server (window registers as a foreground GUI
+   app in the window server; 24 sections / 55,488 vertices meshed from a real chunk).
 3. Atlas + lighting + fog matching vanilla screenshots (visual diff test, assets from cache).
+   Needs a block-state → model/texture resolver; `BlockRegistry` currently only has
+   name/color, not model geometry.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.
 
