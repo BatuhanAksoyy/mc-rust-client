@@ -7,7 +7,7 @@ use std::{io, time::Duration};
 use bytes::BytesMut;
 use mc_client::{TransportError, join};
 use mc_protocol::{
-    CodecError, PROTOCOL_VERSION, configuration, encode_varint,
+    CodecError, PROTOCOL_VERSION, chunk, configuration, encode_varint,
     framing::{FrameCodec, RawPacket},
     login, play,
     types::{Reader, encode_string},
@@ -180,6 +180,33 @@ fn synchronize_position(
     body
 }
 
+/// One minimal `level_chunk_with_light` payload: no heightmaps, one
+/// single-valued (air) section, no block entities, no light.
+fn minimal_chunk(x: i32, z: i32) -> Vec<u8> {
+    let mut body = x.to_be_bytes().to_vec();
+    body.extend(z.to_be_bytes());
+    body.extend(varint(0)); // No heightmaps.
+    let single_valued = |value: i32| {
+        let mut c = vec![0]; // Bits per entry.
+        c.extend(varint(value));
+        c
+    };
+    let mut section = 0_i16.to_be_bytes().to_vec(); // Block count.
+    section.extend(0_i16.to_be_bytes()); // Fluid count.
+    section.extend(single_valued(0)); // Block states: air.
+    section.extend(single_valued(0)); // Biomes.
+    body.extend(varint(i32::try_from(section.len()).unwrap()));
+    body.extend(section);
+    body.extend(varint(0)); // No block entities.
+    body.extend(varint(0)); // Sky light mask.
+    body.extend(varint(0)); // Block light mask.
+    body.extend(varint(0)); // Empty sky light mask.
+    body.extend(varint(0)); // Empty block light mask.
+    body.extend(varint(0)); // No sky light arrays.
+    body.extend(varint(0)); // No block light arrays.
+    body
+}
+
 // --- A minimal synthetic peer sharing the crate's own frame codec. ---
 
 struct Server {
@@ -253,14 +280,71 @@ impl Server {
 
     /// Send a representative set of pre-spawn Play packets (a recognized
     /// event, the chunk center, one unrecognized ID that must be skipped
-    /// rather than failing, and a keep-alive), then the spawn teleport that
-    /// ends the phase, verifying the client's Confirm Teleportation and
-    /// Player Loaded replies.
+    /// rather than failing, a one-chunk batch, and a keep-alive), then the
+    /// spawn teleport that ends the phase, verifying the client's Chunk
+    /// Batch Received, Confirm Teleportation and Player Loaded replies.
+    /// Send one coalesced batch covering every configuration packet kind
+    /// (known packs, cookie, keep-alive, ping, plugin, reset-chat, two
+    /// registries, features, tags, server links, and finish), verifying
+    /// each of the client's replies.
+    async fn drive_configuration_sequence(&mut self) {
+        self.send_batch(&[
+            (CONFIG_KNOWN_PACKS_REQUEST_ID, known_packs_request(&[("minecraft", "core", "1")])),
+            (CONFIG_COOKIE_REQUEST_ID, string("test:cookie")),
+            (configuration::KEEP_ALIVE_ID, 42_i64.to_be_bytes().to_vec()),
+            (configuration::PONG_ID, 7_i32.to_be_bytes().to_vec()),
+            (CONFIG_PLUGIN_ID, [string("test:channel"), b"hello".to_vec()].concat()),
+            (CONFIG_RESET_CHAT_ID, Vec::new()),
+            (
+                CONFIG_REGISTRY_ID,
+                registry_data(
+                    "minecraft:dimension_type",
+                    &[("minecraft:overworld", Some(&[10, 0]))],
+                ),
+            ),
+            (
+                CONFIG_REGISTRY_ID,
+                registry_data(
+                    "minecraft:worldgen/biome",
+                    &[("minecraft:plains", Some(&[10, 0])), ("minecraft:desert", Some(&[10, 0]))],
+                ),
+            ),
+            (CONFIG_FEATURES_ID, features(&["minecraft:vanilla", "minecraft:bundle"])),
+            (CONFIG_TAGS_ID, tags("minecraft:block", "minecraft:mineable/pickaxe", &[0, 1])),
+            (CONFIG_SERVER_LINKS_ID, server_links_builtin(6, "https://example.test")),
+            (configuration::FINISH_ID, Vec::new()),
+        ])
+        .await;
+
+        let known_packs_reply = self.read().await;
+        assert_eq!(known_packs_reply.id, configuration::KNOWN_PACKS_ID);
+        assert_eq!(known_packs_reply.payload.as_ref(), [0]);
+
+        let cookie_reply = self.read().await;
+        assert_eq!(cookie_reply.id, configuration::COOKIE_RESPONSE_ID);
+        assert_eq!(cookie_reply.payload.as_ref(), login::absent_cookie("test:cookie").unwrap());
+
+        let keep_alive_reply = self.read().await;
+        assert_eq!(keep_alive_reply.id, configuration::KEEP_ALIVE_ID);
+        assert_eq!(keep_alive_reply.payload.as_ref(), 42_i64.to_be_bytes());
+
+        let pong_reply = self.read().await;
+        assert_eq!(pong_reply.id, configuration::PONG_ID);
+        assert_eq!(pong_reply.payload.as_ref(), 7_i32.to_be_bytes());
+
+        let finish_ack = self.read().await;
+        assert_eq!(finish_ack.id, configuration::FINISH_ID);
+        assert!(finish_ack.payload.is_empty());
+    }
+
     async fn drive_spawn_sequence(&mut self) {
         self.send_batch(&[
             (play::GAME_EVENT_ID, game_event(13, 0.0)),
             (play::SET_CENTER_CHUNK_ID, set_center_chunk(1, -3)),
             (99, vec![0xaa, 0xbb]),
+            (chunk::BATCH_START_ID, Vec::new()),
+            (chunk::LEVEL_CHUNK_WITH_LIGHT_ID, minimal_chunk(1, -3)),
+            (chunk::BATCH_FINISHED_ID, varint(1)),
             (play::KEEP_ALIVE_ID, 99_i64.to_be_bytes().to_vec()),
             (
                 play::SYNCHRONIZE_POSITION_ID,
@@ -268,6 +352,10 @@ impl Server {
             ),
         ])
         .await;
+
+        let batch_received = self.read().await;
+        assert_eq!(batch_received.id, chunk::BATCH_RECEIVED_ID);
+        assert_eq!(batch_received.payload.len(), 4); // One big-endian f32.
 
         let keep_alive_reply = self.read().await;
         assert_eq!(keep_alive_reply.id, play::SERVERBOUND_KEEP_ALIVE_ID);
@@ -315,61 +403,7 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
         assert_eq!(info.id, configuration::INFORMATION_ID);
         assert_eq!(info.payload.as_ref(), configuration::information().unwrap());
 
-        // One coalesced batch covering every configuration packet kind:
-        // known packs, cookie, keep-alive, ping, plugin, reset-chat, two
-        // registries, features, tags, server links, and finish.
-        server
-            .send_batch(&[
-                (CONFIG_KNOWN_PACKS_REQUEST_ID, known_packs_request(&[("minecraft", "core", "1")])),
-                (CONFIG_COOKIE_REQUEST_ID, string("test:cookie")),
-                (configuration::KEEP_ALIVE_ID, 42_i64.to_be_bytes().to_vec()),
-                (configuration::PONG_ID, 7_i32.to_be_bytes().to_vec()),
-                (CONFIG_PLUGIN_ID, [string("test:channel"), b"hello".to_vec()].concat()),
-                (CONFIG_RESET_CHAT_ID, Vec::new()),
-                (
-                    CONFIG_REGISTRY_ID,
-                    registry_data(
-                        "minecraft:dimension_type",
-                        &[("minecraft:overworld", Some(&[10, 0]))],
-                    ),
-                ),
-                (
-                    CONFIG_REGISTRY_ID,
-                    registry_data(
-                        "minecraft:worldgen/biome",
-                        &[
-                            ("minecraft:plains", Some(&[10, 0])),
-                            ("minecraft:desert", Some(&[10, 0])),
-                        ],
-                    ),
-                ),
-                (CONFIG_FEATURES_ID, features(&["minecraft:vanilla", "minecraft:bundle"])),
-                (CONFIG_TAGS_ID, tags("minecraft:block", "minecraft:mineable/pickaxe", &[0, 1])),
-                (CONFIG_SERVER_LINKS_ID, server_links_builtin(6, "https://example.test")),
-                (configuration::FINISH_ID, Vec::new()),
-            ])
-            .await;
-
-        let known_packs_reply = server.read().await;
-        assert_eq!(known_packs_reply.id, configuration::KNOWN_PACKS_ID);
-        assert_eq!(known_packs_reply.payload.as_ref(), [0]);
-
-        let cookie_reply = server.read().await;
-        assert_eq!(cookie_reply.id, configuration::COOKIE_RESPONSE_ID);
-        assert_eq!(cookie_reply.payload.as_ref(), login::absent_cookie("test:cookie").unwrap());
-
-        let keep_alive_reply = server.read().await;
-        assert_eq!(keep_alive_reply.id, configuration::KEEP_ALIVE_ID);
-        assert_eq!(keep_alive_reply.payload.as_ref(), 42_i64.to_be_bytes());
-
-        let pong_reply = server.read().await;
-        assert_eq!(pong_reply.id, configuration::PONG_ID);
-        assert_eq!(pong_reply.payload.as_ref(), 7_i32.to_be_bytes());
-
-        let finish_ack = server.read().await;
-        assert_eq!(finish_ack.id, configuration::FINISH_ID);
-        assert!(finish_ack.payload.is_empty());
-
+        server.drive_configuration_sequence().await;
         server.send(play::LOGIN_ID, &play_login(123, 0, "minecraft:overworld", 1, -1, true)).await;
         server.drive_spawn_sequence().await;
     };
@@ -410,6 +444,11 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
     assert_eq!(joined.spawn.yaw.to_bits(), 0.0_f32.to_bits());
     assert_eq!(joined.spawn.pitch.to_bits(), 0.0_f32.to_bits());
     assert_eq!(joined.spawn.flags, 0);
+
+    assert_eq!(joined.chunks.len(), 1);
+    assert_eq!((joined.chunks[0].x, joined.chunks[0].z), (1, -3));
+    assert_eq!(joined.chunks[0].sections.len(), 1);
+    assert_eq!(joined.chunks[0].sections[0].block_states.get(0), Some(0));
 }
 
 #[tokio::test]
@@ -472,6 +511,21 @@ async fn relative_initial_spawn_teleport_is_rejected() {
         result,
         Err(join::JoinError::InvalidState("relative initial spawn teleport"))
     ));
+}
+
+#[tokio::test]
+async fn chunk_batch_finished_without_a_start_is_rejected() {
+    let result = Box::pin(spawn_result((chunk::BATCH_FINISHED_ID, varint(1)))).await;
+    assert!(matches!(
+        result,
+        Err(join::JoinError::InvalidState("chunk batch finished without a start"))
+    ));
+}
+
+#[tokio::test]
+async fn malformed_chunk_packet_is_rejected() {
+    let result = Box::pin(spawn_result((chunk::LEVEL_CHUNK_WITH_LIGHT_ID, vec![0xff]))).await;
+    assert!(matches!(result, Err(join::JoinError::Chunk(_))));
 }
 
 #[tokio::test]

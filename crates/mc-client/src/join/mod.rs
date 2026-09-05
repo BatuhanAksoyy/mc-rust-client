@@ -5,9 +5,16 @@ mod registries;
 pub use registries::{Registries, RegistryEntry};
 
 use crate::transport::{Connection, TransportError};
-use mc_protocol::{CodecError, configuration, encode_varint, framing::RawPacket, login, play};
-use std::time::Duration;
+use mc_protocol::{
+    CodecError, chunk, configuration, encode_varint, framing::RawPacket, login, play,
+};
+use std::time::{Duration, Instant};
 use tokio::time::timeout;
+
+/// Client policy bound on chunks decoded before spawn; a real batch is
+/// bounded by view distance, not this. Guards against many tiny chunks
+/// amplifying a bounded byte budget into a large `Vec<LevelChunk>`.
+const MAX_CHUNKS_PER_JOIN: usize = 256;
 
 /// Terminal join failure; cancellation and errors close the connection.
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +31,9 @@ pub enum JoinError {
     /// Pre-spawn Play packet fields or NBT were malformed.
     #[error("invalid play packet: {0}")]
     Play(#[from] play::Error),
+    /// A chunk or block-entity field or NBT was malformed.
+    #[error("invalid chunk packet: {0}")]
+    Chunk(#[from] chunk::Error),
     /// One overall deadline was exceeded.
     #[error("client join timed out")]
     Timeout,
@@ -57,6 +67,10 @@ pub struct Joined {
     pub center_chunk: Option<(i32, i32)>,
     /// Confirmed initial spawn position and rotation.
     pub spawn: play::Teleport,
+    /// Chunks received before spawn was confirmed, in arrival order. Pumpkin
+    /// sends the initial view-area batch before the spawn teleport; further
+    /// chunks (from movement or a changed loading area) are later work.
+    pub chunks: Vec<chunk::LevelChunk>,
     connection: Connection,
 }
 
@@ -130,42 +144,73 @@ async fn exchange(
     {
         return Err(JoinError::InvalidState("unknown Play dimension-type index"));
     }
-    let (center_chunk, spawn) = await_spawn(&mut connection, &mut budget).await?;
-    Ok(Joined { profile, world, registries, metadata, center_chunk, spawn, connection })
+    let (center_chunk, spawn, chunks) = await_spawn(&mut connection, &mut budget).await?;
+    Ok(Joined { profile, world, registries, metadata, center_chunk, spawn, chunks, connection })
 }
 
-/// Consume Play packets until the initial spawn teleport is confirmed. Every
-/// Play packet ID this client does not recognize is discarded unread: see the
-/// policy note on `play::Packet`. Budget limits still bound this loop.
+/// Consume Play packets until the initial spawn teleport is confirmed,
+/// retaining any chunk batch received first (Pumpkin sends the initial view
+/// area before teleporting the player). Every Play packet ID this client
+/// does not otherwise recognize is discarded unread: see the policy note on
+/// `play::Packet`. Budget limits still bound this loop.
 async fn await_spawn(
     connection: &mut Connection,
     budget: &mut Budget,
-) -> Result<(Option<(i32, i32)>, play::Teleport), JoinError> {
+) -> Result<(Option<(i32, i32)>, play::Teleport, Vec<chunk::LevelChunk>), JoinError> {
     let mut center_chunk = None;
+    let mut chunks = Vec::new();
+    let mut batch_started = None;
     loop {
         let packet = budget.read(connection).await?;
-        match play::decode(&packet)? {
-            Some(play::Packet::Disconnect) => return Err(JoinError::Disconnected("play")),
-            Some(play::Packet::KeepAlive(id)) => {
-                connection.send(play::SERVERBOUND_KEEP_ALIVE_ID, &id.to_be_bytes()).await?;
-            }
-            Some(play::Packet::SetCenterChunk { x, z }) => center_chunk = Some((x, z)),
-            Some(play::Packet::SynchronizePosition(teleport)) => {
-                if teleport.flags != 0 {
-                    // No prior position exists yet to apply relative deltas to.
-                    return Err(JoinError::InvalidState("relative initial spawn teleport"));
+        match packet.id {
+            chunk::BATCH_START_ID => batch_started = Some(Instant::now()),
+            chunk::LEVEL_CHUNK_WITH_LIGHT_ID => {
+                if chunks.len() == MAX_CHUNKS_PER_JOIN {
+                    return Err(JoinError::Limit);
                 }
-                let mut id = Vec::new();
-                encode_varint(teleport.id, &mut id);
-                connection.send(play::ACCEPT_TELEPORTATION_ID, &id).await?;
-                connection.send(play::PLAYER_LOADED_ID, &[]).await?;
-                return Ok((center_chunk, teleport));
+                chunks.push(chunk::decode(&packet)?);
             }
-            // Game Event, and every packet ID this client doesn't recognize
-            // (chunk/light/entity data, recipes, ...), are later work.
-            Some(play::Packet::GameEvent { .. }) | None => {}
+            chunk::BATCH_FINISHED_ID => {
+                let Some(started) = batch_started.take() else {
+                    return Err(JoinError::InvalidState("chunk batch finished without a start"));
+                };
+                let batch_size = chunk::decode_batch_finished(&packet)?;
+                let reply = chunk::batch_received(desired_chunks_per_tick(started, batch_size));
+                connection.send(chunk::BATCH_RECEIVED_ID, &reply).await?;
+            }
+            _ => match play::decode(&packet)? {
+                Some(play::Packet::Disconnect) => return Err(JoinError::Disconnected("play")),
+                Some(play::Packet::KeepAlive(id)) => {
+                    connection.send(play::SERVERBOUND_KEEP_ALIVE_ID, &id.to_be_bytes()).await?;
+                }
+                Some(play::Packet::SetCenterChunk { x, z }) => center_chunk = Some((x, z)),
+                Some(play::Packet::SynchronizePosition(teleport)) => {
+                    if teleport.flags != 0 {
+                        // No prior position exists yet to apply relative deltas to.
+                        return Err(JoinError::InvalidState("relative initial spawn teleport"));
+                    }
+                    let mut id = Vec::new();
+                    encode_varint(teleport.id, &mut id);
+                    connection.send(play::ACCEPT_TELEPORTATION_ID, &id).await?;
+                    connection.send(play::PLAYER_LOADED_ID, &[]).await?;
+                    return Ok((center_chunk, teleport, chunks));
+                }
+                // Game Event, and every packet ID this client doesn't
+                // recognize (entity data, recipes, ...), are later work.
+                Some(play::Packet::GameEvent { .. }) | None => {}
+            },
         }
     }
+}
+
+/// Estimate chunks-per-tick from one batch, per wiki Packets § Chunk Batch
+/// Finished's `25 / millisPerChunk` formula. Vanilla smooths this over its
+/// last 15 batches; a single-batch estimate is enough for this join step.
+fn desired_chunks_per_tick(started: Instant, batch_size: i32) -> f32 {
+    #[allow(clippy::cast_precision_loss)] // A chunk count never approaches f32's precision limit.
+    let size = batch_size.clamp(1, i32::from(i16::MAX)) as f32;
+    let millis_per_chunk = started.elapsed().as_secs_f32() * 1000.0 / size;
+    25.0 / millis_per_chunk.max(0.01)
 }
 
 async fn login_phase(
