@@ -65,102 +65,112 @@ enum Command {
 async fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Join { host, port, name, timeout_ms } => {
-            match mc_client::join::connect(&host, port, &name, Duration::from_millis(timeout_ms))
-                .await
-            {
-                Ok(joined) => {
-                    println!(
-                        "Reached Play: player={}, entity={}, dimension={}, registries={}, entries={}",
-                        joined.profile.name,
-                        joined.world.entity_id,
-                        joined.world.dimension_name,
-                        joined.registries.len(),
-                        joined.registries.entry_count()
-                    );
-                    eprintln!(
-                        "Headless join probe complete; disconnecting. Rendering/gameplay are not implemented yet."
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::FAILURE
-                }
-            }
+            run_join(host, port, name, timeout_ms).await
         }
         Command::Local { pumpkin, session, port, startup_seconds, check } => {
-            // Install the handler before startup, so Ctrl-C also cancels startup
-            // and drops any partially started child.
-            let interrupted = tokio::signal::ctrl_c();
-            tokio::pin!(interrupted);
-            let startup = mc_client::local::start(
-                &pumpkin,
-                &session,
-                port,
-                Duration::from_secs(startup_seconds),
+            run_local(pumpkin, session, port, startup_seconds, check).await
+        }
+        Command::Status { host, port, timeout_ms } => run_status(host, port, timeout_ms).await,
+    }
+}
+
+async fn run_join(host: String, port: u16, name: String, timeout_ms: u64) -> ExitCode {
+    match mc_client::join::connect(&host, port, &name, Duration::from_millis(timeout_ms)).await {
+        Ok(joined) => {
+            println!(
+                "Reached spawn: player={}, entity={}, dimension={}, registries={}, entries={}, \
+                 position=({:.1}, {:.1}, {:.1})",
+                joined.profile.name,
+                joined.world.entity_id,
+                joined.world.dimension_name,
+                joined.registries.len(),
+                joined.registries.entry_count(),
+                joined.spawn.x,
+                joined.spawn.y,
+                joined.spawn.z
             );
-            let result = tokio::select! {
-                result = startup => result,
+            eprintln!(
+                "Headless join probe complete; disconnecting. Rendering/gameplay are not implemented yet."
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_local(
+    pumpkin: PathBuf,
+    session: PathBuf,
+    port: u16,
+    startup_seconds: u64,
+    check: bool,
+) -> ExitCode {
+    // Install the handler before startup, so Ctrl-C also cancels startup
+    // and drops any partially started child.
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+    let startup =
+        mc_client::local::start(&pumpkin, &session, port, Duration::from_secs(startup_seconds));
+    let result = tokio::select! {
+        result = startup => result,
+        result = &mut interrupted => {
+            eprintln!("Local startup interrupted: {result:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (mut server, status) = match result {
+        Ok(started) => started,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("{}", status.json);
+    eprintln!("Pumpkin ready on 127.0.0.1:{}. Ctrl-C saves and stops.", server.port());
+    if !check {
+        loop {
+            tokio::select! {
                 result = &mut interrupted => {
-                    eprintln!("Local startup interrupted: {result:?}");
-                    return ExitCode::FAILURE;
+                    if let Err(error) = result { eprintln!("Signal handler failed: {error}"); }
+                    break;
                 }
-            };
-            match result {
-                Ok((mut server, status)) => {
-                    println!("{}", status.json);
-                    eprintln!(
-                        "Pumpkin ready on 127.0.0.1:{}. Ctrl-C saves and stops.",
-                        server.port()
-                    );
-                    if !check {
-                        loop {
-                            tokio::select! {
-                                result = &mut interrupted => {
-                                    if let Err(error) = result { eprintln!("Signal handler failed: {error}"); }
-                                    break;
-                                }
-                                () = tokio::time::sleep(Duration::from_millis(100)) => {
-                                    match server.try_wait() {
-                                        Ok(None) => {},
-                                        result => {
-                                            eprintln!("Pumpkin stopped unexpectedly: {result:?}");
-                                            return ExitCode::FAILURE;
-                                        }
-                                    }
-                                }
-                            }
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
+                    match server.try_wait() {
+                        Ok(None) => {},
+                        result => {
+                            eprintln!("Pumpkin stopped unexpectedly: {result:?}");
+                            return ExitCode::FAILURE;
                         }
                     }
-                    match server.shutdown(Duration::from_secs(30)).await {
-                        Ok(()) => {
-                            eprintln!("Pumpkin stopped cleanly.");
-                            ExitCode::SUCCESS
-                        }
-                        Err(error) => {
-                            eprintln!("{error}");
-                            ExitCode::FAILURE
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::FAILURE
                 }
             }
         }
-        Command::Status { host, port, timeout_ms } => {
-            match mc_client::status::query(&host, port, Duration::from_millis(timeout_ms)).await {
-                Ok(result) => {
-                    println!("{}", result.json);
-                    eprintln!("Ping: {:.2} ms", result.latency.as_secs_f64() * 1000.0);
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::FAILURE
-                }
-            }
+    }
+    match server.shutdown(Duration::from_secs(30)).await {
+        Ok(()) => {
+            eprintln!("Pumpkin stopped cleanly.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_status(host: String, port: u16, timeout_ms: u64) -> ExitCode {
+    match mc_client::status::query(&host, port, Duration::from_millis(timeout_ms)).await {
+        Ok(result) => {
+            println!("{}", result.json);
+            eprintln!("Ping: {:.2} ms", result.latency.as_secs_f64() * 1000.0);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
         }
     }
 }

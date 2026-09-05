@@ -1,14 +1,16 @@
 # Offline client join — protocol 776 / 26.2
 
-## SPEC: reach Play, without gameplay yet
+## SPEC: reach a confirmed spawn, without gameplay yet
 
 Use the pinned external Pumpkin from `SINGLEPLAYER.md`. Implement a headless
 `join` probe: Handshake(intent 2) → Login Start → Login Success → Login Ack →
-Configuration → Finish Configuration Ack → receive and decode Play Login.
-The probe reports the assigned player/entity/dimension and registry counts, then
-disconnects. The library returns an owned live connection and buffered transport
-state for subsequent chunk work. This does not render, spawn-confirm, simulate
-movement, or implement a server. Account authentication remains deferred.
+Configuration → Finish Configuration Ack → decode Play Login → confirm the
+initial spawn teleport (Confirm Teleportation + Player Loaded).
+The probe reports the assigned player/entity/dimension, registry counts and
+confirmed spawn position, then disconnects. The library returns an owned live
+connection and buffered transport state for subsequent chunk work. This does
+not render, receive chunk/entity data, simulate movement, or implement a
+server. Account authentication remains deferred.
 
 Client policy: offline development only; usernames are 1–16 ASCII letters,
 digits or underscores. Login Start sends a nil UUID; the offline server assigns
@@ -39,8 +41,17 @@ accepted as older layouts.
   automatically accept codes of conduct, download resource packs, follow server
   links/transfers, or persist cookies. Configuration disconnects are errors.
 - Require a dimension-type registry and resolve Play Login's dimension-type
-  index into it before reporting success. Other registry semantics and spawn
-  packets are later client work. A finish ACK alone is not successful joining.
+  index into it before reporting success. Other registry semantics are later
+  client work. A finish ACK alone is not successful joining.
+- Play (pre-spawn): unlike Login/Configuration, an unrecognized Play packet ID
+  is skipped unread rather than treated as an error — Play has far more packet
+  variety than this step needs to understand, and chunk/light/entity data are
+  later work. Only Disconnect, Game Event, Keep Alive, Set Center Chunk and
+  Synchronize Player Position are decoded; Disconnect is an error, Keep Alive
+  is echoed. Synchronize Player Position must be absolute (Teleport Flags
+  zero) — there is no prior position yet to apply relative deltas to; a
+  nonzero flags value is rejected rather than approximated. Reaching spawn
+  means replying Confirm Teleportation with the given ID, then Player Loaded.
 
 ## Bounds and verification
 
@@ -54,8 +65,10 @@ limits, not protocol constants. No additional dependencies are required.
 
 Synthetic TCP tests must cover compression/coalescing, state acknowledgements,
 full registry retention, ping/cookie/plugin replies, malformed packets, missing
-registry data, encryption rejection and timeout/EOF. Opt-in pinned-Pumpkin test
-must receive Play Login, not just status. No game fixtures are vendored.
+registry data, encryption rejection, timeout/EOF, an unrecognized Play packet
+being skipped rather than failing, a rejected relative initial teleport, and a
+Play disconnect. Opt-in pinned-Pumpkin test must reach confirmed spawn, not
+just Play Login. No game fixtures are vendored.
 
 No hot-path optimization is proposed: this is a bounded startup transaction.
 The existing codec/NBT Criterion benchmarks remain the performance baselines.

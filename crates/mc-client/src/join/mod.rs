@@ -1,10 +1,11 @@
-//! Offline Login → Configuration → Play Login. See `docs/JOIN.md` (protocol 776).
+//! Offline Login → Configuration → Play → spawn confirmation. See `docs/JOIN.md`
+//! (protocol 776).
 
 mod registries;
 pub use registries::{Registries, RegistryEntry};
 
 use crate::transport::{Connection, TransportError};
-use mc_protocol::{CodecError, configuration, framing::RawPacket, login, play};
+use mc_protocol::{CodecError, configuration, encode_varint, framing::RawPacket, login, play};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -14,12 +15,15 @@ pub enum JoinError {
     /// TCP or framing failed.
     #[error(transparent)]
     Transport(#[from] TransportError),
-    /// Login or Play packet fields were malformed.
+    /// Login or Play Login packet fields were malformed.
     #[error("invalid join packet: {0}")]
     Codec(#[from] CodecError),
     /// Configuration fields or NBT were malformed/unsupported.
     #[error("invalid configuration packet: {0}")]
     Configuration(#[from] configuration::Error),
+    /// Pre-spawn Play packet fields or NBT were malformed.
+    #[error("invalid play packet: {0}")]
+    Play(#[from] play::Error),
     /// One overall deadline was exceeded.
     #[error("client join timed out")]
     Timeout,
@@ -48,6 +52,11 @@ pub struct Joined {
     pub registries: Registries,
     /// Structurally validated feature/tag update packets, in arrival order.
     pub metadata: Vec<RawPacket>,
+    /// Chunk-loading area center, if the server sent one before spawn.
+    /// Absent means the default area centered on the world origin applies.
+    pub center_chunk: Option<(i32, i32)>,
+    /// Confirmed initial spawn position and rotation.
+    pub spawn: play::Teleport,
     connection: Connection,
 }
 
@@ -59,7 +68,9 @@ impl Joined {
     }
 }
 
-/// Join an offline server with one deadline covering DNS through Play Login.
+/// Join an offline server with one deadline covering DNS through spawn
+/// confirmation (Confirm Teleportation + Player Loaded sent).
+///
 /// Dropping the future (or the returned session) closes TCP. No auth fallback.
 pub async fn connect(
     host: &str,
@@ -119,7 +130,42 @@ async fn exchange(
     {
         return Err(JoinError::InvalidState("unknown Play dimension-type index"));
     }
-    Ok(Joined { profile, world, registries, metadata, connection })
+    let (center_chunk, spawn) = await_spawn(&mut connection, &mut budget).await?;
+    Ok(Joined { profile, world, registries, metadata, center_chunk, spawn, connection })
+}
+
+/// Consume Play packets until the initial spawn teleport is confirmed. Every
+/// Play packet ID this client does not recognize is discarded unread: see the
+/// policy note on `play::Packet`. Budget limits still bound this loop.
+async fn await_spawn(
+    connection: &mut Connection,
+    budget: &mut Budget,
+) -> Result<(Option<(i32, i32)>, play::Teleport), JoinError> {
+    let mut center_chunk = None;
+    loop {
+        let packet = budget.read(connection).await?;
+        match play::decode(&packet)? {
+            Some(play::Packet::Disconnect) => return Err(JoinError::Disconnected("play")),
+            Some(play::Packet::KeepAlive(id)) => {
+                connection.send(play::SERVERBOUND_KEEP_ALIVE_ID, &id.to_be_bytes()).await?;
+            }
+            Some(play::Packet::SetCenterChunk { x, z }) => center_chunk = Some((x, z)),
+            Some(play::Packet::SynchronizePosition(teleport)) => {
+                if teleport.flags != 0 {
+                    // No prior position exists yet to apply relative deltas to.
+                    return Err(JoinError::InvalidState("relative initial spawn teleport"));
+                }
+                let mut id = Vec::new();
+                encode_varint(teleport.id, &mut id);
+                connection.send(play::ACCEPT_TELEPORTATION_ID, &id).await?;
+                connection.send(play::PLAYER_LOADED_ID, &[]).await?;
+                return Ok((center_chunk, teleport));
+            }
+            // Game Event, and every packet ID this client doesn't recognize
+            // (chunk/light/entity data, recipes, ...), are later work.
+            Some(play::Packet::GameEvent { .. }) | None => {}
+        }
+    }
 }
 
 async fn login_phase(

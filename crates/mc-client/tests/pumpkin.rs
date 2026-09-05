@@ -23,10 +23,13 @@ async fn pinned_pumpkin_starts_stops_and_reopens_world() {
         assert_eq!(joined.world.dimension_name, "minecraft:overworld");
         assert_eq!(joined.world.game_mode, 1);
         assert!(joined.registries.entry_count() > 0);
+        assert_eq!(joined.spawn.flags, 0);
         eprintln!(
-            "Joined Pumpkin: {} registries, {} entries",
+            "Joined Pumpkin: {} registries, {} entries, spawn {:?}, center chunk {:?}",
             joined.registries.len(),
-            joined.registries.entry_count()
+            joined.registries.entry_count(),
+            joined.spawn,
+            joined.center_chunk
         );
         drop(joined);
         assert!(session.join("world/level.dat").metadata().unwrap().len() > 0);

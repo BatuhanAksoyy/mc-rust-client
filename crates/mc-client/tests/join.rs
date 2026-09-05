@@ -145,6 +145,41 @@ fn play_login(
     body
 }
 
+fn game_event(event: u8, value: f32) -> Vec<u8> {
+    let mut body = vec![event];
+    body.extend(value.to_be_bytes());
+    body
+}
+
+fn set_center_chunk(x: i32, z: i32) -> Vec<u8> {
+    let mut body = varint(x);
+    body.extend(varint(z));
+    body
+}
+
+#[allow(clippy::too_many_arguments)]
+fn synchronize_position(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f32,
+    pitch: f32,
+    flags: i32,
+) -> Vec<u8> {
+    let mut body = varint(id);
+    body.extend(x.to_be_bytes());
+    body.extend(y.to_be_bytes());
+    body.extend(z.to_be_bytes());
+    body.extend(0_f64.to_be_bytes()); // Velocity X.
+    body.extend(0_f64.to_be_bytes()); // Velocity Y.
+    body.extend(0_f64.to_be_bytes()); // Velocity Z.
+    body.extend(yaw.to_be_bytes());
+    body.extend(pitch.to_be_bytes());
+    body.extend(flags.to_be_bytes());
+    body
+}
+
 // --- A minimal synthetic peer sharing the crate's own frame codec. ---
 
 struct Server {
@@ -214,6 +249,39 @@ impl Server {
         assert_eq!(reader.string(16).unwrap(), name);
         assert_eq!(reader.array::<16>().unwrap(), [0; 16]); // Nil placeholder UUID.
         reader.finish().unwrap();
+    }
+
+    /// Send a representative set of pre-spawn Play packets (a recognized
+    /// event, the chunk center, one unrecognized ID that must be skipped
+    /// rather than failing, and a keep-alive), then the spawn teleport that
+    /// ends the phase, verifying the client's Confirm Teleportation and
+    /// Player Loaded replies.
+    async fn drive_spawn_sequence(&mut self) {
+        self.send_batch(&[
+            (play::GAME_EVENT_ID, game_event(13, 0.0)),
+            (play::SET_CENTER_CHUNK_ID, set_center_chunk(1, -3)),
+            (99, vec![0xaa, 0xbb]),
+            (play::KEEP_ALIVE_ID, 99_i64.to_be_bytes().to_vec()),
+            (
+                play::SYNCHRONIZE_POSITION_ID,
+                synchronize_position(7, 23.5, 80.0, -32.5, 0.0, 0.0, 0),
+            ),
+        ])
+        .await;
+
+        let keep_alive_reply = self.read().await;
+        assert_eq!(keep_alive_reply.id, play::SERVERBOUND_KEEP_ALIVE_ID);
+        assert_eq!(keep_alive_reply.payload.as_ref(), 99_i64.to_be_bytes());
+
+        let confirm = self.read().await;
+        assert_eq!(confirm.id, play::ACCEPT_TELEPORTATION_ID);
+        let mut reader = Reader::new(&confirm.payload);
+        assert_eq!(reader.varint().unwrap(), 7);
+        reader.finish().unwrap();
+
+        let player_loaded = self.read().await;
+        assert_eq!(player_loaded.id, play::PLAYER_LOADED_ID);
+        assert!(player_loaded.payload.is_empty());
     }
 }
 
@@ -303,6 +371,7 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
         assert!(finish_ack.payload.is_empty());
 
         server.send(play::LOGIN_ID, &play_login(123, 0, "minecraft:overworld", 1, -1, true)).await;
+        server.drive_spawn_sequence().await;
     };
 
     let client = Box::pin(connect(port, Duration::from_secs(5)));
@@ -332,6 +401,15 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
     assert_eq!(joined.metadata.len(), 2);
     assert_eq!(joined.metadata[0].id, CONFIG_FEATURES_ID);
     assert_eq!(joined.metadata[1].id, CONFIG_TAGS_ID);
+
+    assert_eq!(joined.center_chunk, Some((1, -3)));
+    assert_eq!(joined.spawn.id, 7);
+    assert_eq!(joined.spawn.x.to_bits(), 23.5_f64.to_bits());
+    assert_eq!(joined.spawn.y.to_bits(), 80.0_f64.to_bits());
+    assert_eq!(joined.spawn.z.to_bits(), (-32.5_f64).to_bits());
+    assert_eq!(joined.spawn.yaw.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(joined.spawn.pitch.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(joined.spawn.flags, 0);
 }
 
 #[tokio::test]
@@ -377,6 +455,22 @@ async fn malformed_configuration_packets_are_rejected() {
     assert!(matches!(
         trailing,
         Err(join::JoinError::Configuration(configuration::Error::Codec(CodecError::TrailingData)))
+    ));
+}
+
+#[tokio::test]
+async fn play_disconnect_during_spawn_is_reported() {
+    let result = Box::pin(spawn_result((play::DISCONNECT_ID, vec![8, 0, 0]))).await; // Empty NBT string reason.
+    assert!(matches!(result, Err(join::JoinError::Disconnected("play"))));
+}
+
+#[tokio::test]
+async fn relative_initial_spawn_teleport_is_rejected() {
+    let body = synchronize_position(1, 0.0, 0.0, 0.0, 0.0, 0.0, 1); // Relative X bit set.
+    let result = Box::pin(spawn_result((play::SYNCHRONIZE_POSITION_ID, body))).await;
+    assert!(matches!(
+        result,
+        Err(join::JoinError::InvalidState("relative initial spawn teleport"))
     ));
 }
 
@@ -431,6 +525,40 @@ async fn configuration_result(next: (i32, Vec<u8>)) -> Result<join::Joined, join
         server.send(LOGIN_SUCCESS_ID, &login_success([1; 16], "RustProbe", [2; 16])).await;
         let _ack = server.read().await;
         let _info = server.read().await;
+        server.send(next.0, &next.1).await;
+    };
+    let client = Box::pin(connect(port, Duration::from_secs(3)));
+    let ((), result) =
+        Box::pin(timeout(Duration::from_secs(5), async { tokio::join!(server, client) }))
+            .await
+            .unwrap();
+    result
+}
+
+/// Drive the server through login success, ack, client info, a minimal
+/// one-entry dimension-type registry, and Play Login, then send one more
+/// pre-spawn Play packet and return the client's outcome.
+async fn spawn_result(next: (i32, Vec<u8>)) -> Result<join::Joined, join::JoinError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = async {
+        let mut server = Server::accept(&listener).await;
+        server.expect_handshake_and_login_start(port, "RustProbe").await;
+        server.send(LOGIN_SUCCESS_ID, &login_success([3; 16], "RustProbe", [4; 16])).await;
+        let _ack = server.read().await;
+        let _info = server.read().await;
+        server
+            .send(
+                CONFIG_REGISTRY_ID,
+                &registry_data(
+                    "minecraft:dimension_type",
+                    &[("minecraft:overworld", Some(&[10, 0]))],
+                ),
+            )
+            .await;
+        server.send(configuration::FINISH_ID, &[]).await;
+        let _finish_ack = server.read().await;
+        server.send(play::LOGIN_ID, &play_login(1, 0, "minecraft:overworld", 1, -1, true)).await;
         server.send(next.0, &next.1).await;
     };
     let client = Box::pin(connect(port, Duration::from_secs(3)));
