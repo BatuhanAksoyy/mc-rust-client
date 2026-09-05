@@ -2,6 +2,7 @@
 //! Pure Minecraft Java protocol 776 serialization. No sockets or game logic.
 //!
 //! Contract: `docs/FOUNDATION.md` and `docs/PROTOCOL-776.md`.
+//! Wire reference: [Java Edition packets](https://minecraft.wiki/w/Java_Edition_protocol/Packets).
 
 mod error;
 pub mod framing;

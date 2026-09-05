@@ -1,4 +1,5 @@
 //! Handshake/Status for 26.2 (776), wiki Java Edition protocol/Packets.
+//! [Wire reference](https://minecraft.wiki/w/Java_Edition_protocol/Packets#Status).
 //!
 //! IDs checked against the cache's 26.2/packets-776.csv. JSON interpretation and
 //! network timing belong to mc-client. These functions operate on packet bodies.

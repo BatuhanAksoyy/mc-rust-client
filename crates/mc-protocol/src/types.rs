@@ -1,4 +1,5 @@
 //! Bounded protocol 776 fields; see wiki Packets § Data types and `FOUNDATION.md`.
+//! [Wire reference](https://minecraft.wiki/w/Java_Edition_protocol/Packets#Data_types).
 
 use crate::{CodecError, decode_varint, decode_varlong, encode_varint};
 

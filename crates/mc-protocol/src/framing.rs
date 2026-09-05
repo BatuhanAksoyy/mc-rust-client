@@ -1,4 +1,5 @@
 //! Incremental protocol 776 framing and zlib; wiki Packets § Packet format.
+//! [Wire reference](https://minecraft.wiki/w/Java_Edition_protocol/Packets#Packet_format).
 //!
 //! The caller bounds its receive buffer and owns I/O. Incomplete input and errors
 //! consume nothing. Errors are terminal. Uncompressed payloads share input storage.

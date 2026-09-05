@@ -1,4 +1,5 @@
 //! Two's-complement variable integers, protocol 776, wiki Packets § Data types.
+//! [Wire reference](https://minecraft.wiki/w/Java_Edition_protocol/Packets#Data_types).
 // Casts deliberately preserve wire bits; masks and width checks bound truncation.
 #![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 
