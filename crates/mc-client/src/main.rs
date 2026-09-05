@@ -47,6 +47,21 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Join, take the first chunk received before spawn, and render it in a window.
+    Render {
+        /// Offline server hostname or IP address.
+        #[arg(default_value = "localhost")]
+        host: String,
+        /// Server TCP port.
+        #[arg(long, default_value_t = 25565, value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+        /// Development username (1–16 ASCII letters, digits or underscores).
+        #[arg(long, default_value = "RustPlayer")]
+        name: String,
+        /// Overall join deadline, in milliseconds.
+        #[arg(long, default_value_t = 30_000, value_parser = clap::value_parser!(u64).range(1..=300_000))]
+        timeout_ms: u64,
+    },
     /// Query server status and measure ping latency without logging in.
     Status {
         /// Hostname or IP address (IPv6 addresses do not need brackets).
@@ -69,6 +84,9 @@ async fn main() -> ExitCode {
         }
         Command::Local { pumpkin, session, port, startup_seconds, check } => {
             run_local(pumpkin, session, port, startup_seconds, check).await
+        }
+        Command::Render { host, port, name, timeout_ms } => {
+            run_render(host, port, name, timeout_ms).await
         }
         Command::Status { host, port, timeout_ms } => run_status(host, port, timeout_ms).await,
     }
@@ -154,6 +172,51 @@ async fn run_local(
             eprintln!("Pumpkin stopped cleanly.");
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Join, render the first received chunk, and block until the window closes.
+///
+/// `mc_render::run` is a blocking, synchronous call (`winit` requires the
+/// platform's main thread on macOS); calling it here is safe only because
+/// nothing else is scheduled on this single-threaded runtime by the time we
+/// reach it — the join future has already resolved.
+async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> ExitCode {
+    let joined =
+        match mc_client::join::connect(&host, port, &name, Duration::from_millis(timeout_ms)).await
+        {
+            Ok(joined) => joined,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let Some(level_chunk) = joined.chunks.first() else {
+        eprintln!(
+            "reached spawn but received no chunk beforehand; nothing to render (try again, or a larger view distance)"
+        );
+        return ExitCode::FAILURE;
+    };
+    let registry = mc_world::BlockRegistry::load_cached("26.2");
+    let chunk = mc_world::Chunk::from_level(level_chunk);
+    let mesh = mc_render::mesh::mesh_chunk(&chunk, &registry);
+    eprintln!(
+        "Rendering chunk ({}, {}): {} sections, {} vertices. Close the window to exit.",
+        chunk.position.x,
+        chunk.position.z,
+        chunk.section_count(),
+        mesh.vertices.len()
+    );
+    #[allow(clippy::cast_precision_loss)] // A chunk's height in blocks is tiny.
+    let height = (chunk.section_count() * 16) as f32;
+    let target = glam::Vec3::new(8.0, height * 0.5, 8.0);
+    let radius = height.max(32.0) * 1.2;
+    match mc_render::run(mesh, "mc-rust-client", target, radius) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
