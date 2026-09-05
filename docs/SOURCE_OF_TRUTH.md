@@ -28,12 +28,54 @@ Full URLs:
 - client: `https://piston-data.mojang.com/v1/objects/2dc72797acbc1b63fc16a11c4ac393605f453754/client.jar`
 - server: `https://piston-data.mojang.com/v1/objects/823e2250d24b3ddac457a60c92a6a941943fcd6a/server.jar`
 
-## Assets
+## In-jar `version.json` (extracted to cache, ground truth)
 
-- `assets`: `32`, index id `32`, sha1 `795a52d29f7f6b1e51d3a65e60ca46ad62aaddec`, size 586366, total ~480 MB.
-- Index URL: `https://piston-meta.mojang.com/v1/packages/795a52d29f7f6b1e51d3a65e60ca46ad62aaddec/32.json`
-- Objects: 5057 entries, CDN: `https://resources.download.minecraft.net/<2-char-hash>/<hash>`.
-- `mcmeta` mirror for metadata (not assets): `https://github.com/misode/mcmeta`.
+```json
+{ "id": "26.2", "protocol_version": 776, "world_version": 4903,
+  "pack_version": { "resource_major": 88, "resource_minor": 0, "data_major": 107, "data_minor": 1 },
+  "java_component": "java-runtime-epsilon", "java_version": 25, "stable": true }
+```
+
+## Local reference cache (`~/.cache/mc-rust-client/`, never committed)
+
+| path | contents |
+|---|---|
+| `26.2/26.2.json` | version manifest (libs, args, assets) |
+| `26.2/client.jar` / `server.jar` | SHA1-verified game jars (study/run offline server only) |
+| `26.2/32-assets.json` | asset index (5057 objects: ~4871 sounds, 143 lang) |
+| `26.2/client-extracted/` | jar JSON+assets: `version.json`, `assets/minecraft/blockstates` (1199), `models/block` (2658), `textures/block` (1372), `data/` (9021 incl. worldgen), `lang`, `META-INF/LICENSE` |
+| `26.2/packets-776.csv` | 256 packet IDs + official names (generated from wiki 776 page) |
+| `ref-26.1/protocol-26.1.json` | minecraft-data 26.1 packet field layouts (structural reference; re-verify vs 776) |
+| `ref-26.1/blocks-26.1.json` | minecraft-data 26.1 block shapes (structural reference) |
+| `versions-minosoft.json` | minosoft version/protocol mapping (cross-check) |
+
+Textures ship **inside** `client.jar` (extract for atlas tests from cache).
+Sounds/lang live in asset objects — fetch on demand, not now (audio is P5+):
+
+```sh
+# example: fetch one object by hash prefix
+h=<sha1>; curl -fsSL "https://resources.download.minecraft.net/${h:0:2}/$h" -o "$CACHE/$h"
+```
+
+## Offline test server (verified 2026-09-05, no auth needed)
+
+- Runtime: Homebrew `openjdk` 26.0.2 runs the 26.2 server (wants Java 25) — boot verified,
+  stops at EULA as expected. Non-interactive shells need
+  `export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"`.
+- Recipe (run from a **scratch dir outside the repo** — the bundler unpacks
+  `libraries/`+`versions/` into cwd, and the server writes world files):
+
+```sh
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
+mkdir -p /tmp/mc-test && cd /tmp/mc-test
+cp ~/.cache/mc-rust-client/26.2/server.jar .
+java -jar server.jar --nogui   # first run: creates eula.txt, exits
+echo "eula=true" > eula.txt
+# server.properties: set online-mode=false, enable-status=true
+java -jar server.jar --nogui   # boots 26.2 offline server on :25565
+```
+
+- Our client tests target this server: status ping → offline login → config → play.
 
 ## Libraries (131 entries)
 

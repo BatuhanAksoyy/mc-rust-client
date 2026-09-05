@@ -1,12 +1,17 @@
 # ROADMAP.md — phases (SP+MP, wgpu, YAGNI)
 
+> Priority decision (2026-09-05): **implementation first**. Auth (MSA/OAuth) and
+> legal polish are deferred to P6. Early testing uses offline mode
+> (`online-mode=false` LAN server, `--offline <name>`) + cache-only reference data.
+> `docs/AUTH.md` and `docs/LEGAL.md` stay as-is for later; they must not block P1–P5.
+
 - [ ] P0 Repo + CI + docs (this snapshot). Acceptance: `fmt/clippy/test/deny` green on 3 OS.
 - [ ] P1 `mc-protocol` 776 codec + tests. Acceptance: round-trip + fuzz clean, status ping works.
-- [ ] P2 `mc-auth` ownership-gated login. Acceptance: mock tests + manual device-code login, offline flag works.
-- [ ] P3 Headless join (offline server) → spawn. Acceptance: bot receives Login(play)+chunks, stays 60s.
+- [ ] P2 Headless join (offline server) → spawn. Acceptance: bot receives Login(play)+chunks, stays 60s. No auth.
+- [ ] P3 `mc-world` chunk types + registries from cache fixtures. Acceptance: parse recorded chunks.
 - [ ] P4 `mc-render` chunk rendering. Acceptance: synthetic chunk 60 FPS debug HUD, no assets committed.
 - [ ] P5 Tick/physics parity. Acceptance: movement tests within epsilon of vanilla observations.
-- [ ] P6 Singleplayer (integrated server via local vanilla `server.jar` initially) + multiplayer hardening.
+- [ ] P6 Auth ownership-gated login + legal review (deferred; see `docs/AUTH.md`, `docs/LEGAL.md`).
 - [ ] P7 Perf: multithread meshing, caching, profiling docs. Acceptance: criterion reports in PR.
 - [ ] Future (not now): Rust mod API (`cdylib` + sandbox). Now: only `ModHost` trait stub, no loader.
 

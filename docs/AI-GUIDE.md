@@ -1,17 +1,21 @@
 # AI-GUIDE.md — how AI implements the client, task by task
 
+> Priority decision (2026-09-05): **auth and legal are deferred** (see ROADMAP P6).
+> Implement offline-first. Reference data lives in `$CACHE/mc-rust-client/26.2/`
+> (jars, asset index, extracted JSON) — never in the repo.
+
 ## Order (each = one PR, one test suite)
 
-1. `mc-protocol` primitives: VarInt, String, NBT, Position. Property tests.
-2. Packet framing + compression + encryption skeleton (mock keys).
+1. `mc-protocol` primitives: VarInt, String, NBT, Position. Property tests. ✅ VarInt done.
+2. Packet framing + compression skeleton (no encryption yet — offline servers skip it).
 3. Handshake + Status ping against local dummy server (integration test).
-4. Login offline → Configuration (Registry Data parse from cache blob) → Play spawn (headless bot joins vanilla 26.2 server in LAN/offline mode).
-5. `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI).
-6. `mc-world` chunk types + mesher input structs.
-7. `mc-render` cube → chunk → atlas (synthetic data first).
-8. `mc-client` tick loop + movement physics tests.
-9. Full join: auth → config → play → render first chunk → move.
-10. Perf pass + cross-platform CI.
+4. Login offline → Configuration (Registry Data parse from cache blob) → Play spawn (headless bot joins vanilla 26.2 server in offline/LAN mode).
+5. `mc-world` chunk types + mesher input structs (registries from cache fixtures).
+6. `mc-render` cube → chunk → atlas (synthetic data first, cache textures later).
+7. `mc-client` tick loop + movement physics tests.
+8. Full join: config → play → render first chunk → move (still offline).
+9. Perf pass + cross-platform CI.
+10. LAST: `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI) + legal review.
 
 ## Definition of done per task
 

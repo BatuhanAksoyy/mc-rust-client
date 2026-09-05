@@ -11,6 +11,8 @@ Goal: feel exactly like Java Edition, with better FPS, cross-platform, Rust modd
 
 ```
 docs/               # source of truth for humans + AI agents (read these first)
+                      # PACKETS-776.md (packet inventory), P1-PROTOCOL.md (next contract),
+                      # AUTH.md + LEGAL.md (deferred to P6 — do not block implementation)
 crates/
   mc-protocol/      # protocol 776 types, packets, NBT, compression, encryption
   mc-auth/          # Microsoft OAuth2 -> Xbox -> Minecraft auth + ownership gate
