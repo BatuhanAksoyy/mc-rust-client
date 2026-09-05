@@ -6,6 +6,10 @@
 
 ## Order (each = one PR, one test suite)
 
+2026-09-06 decision: use Pumpkin as the local singleplayer server and focus
+implementation on the client. See `SINGLEPLAYER.md`. Movement, breaking and
+placing blocks are the first gameplay target; pause is later.
+
 The first usable foundation is scoped and verified by `FOUNDATION.md`; it delivers
 the transport/status path before NBT and login. Follow-up work resumes the order
 below. Declared future-phase dependencies are added when their code lands.
@@ -15,7 +19,8 @@ below. Declared future-phase dependencies are added when their code lands.
 2. Packet framing + bounded zlib implemented (no encryption yet).
 3. Handshake + Status ping implemented against a local dummy TCP server; run
    `cargo run -p mc-client -- status localhost`.
-4. Login offline → Configuration (Registry Data parse from cache blob) → Play spawn (headless bot joins vanilla 26.2 server in offline/LAN mode).
+4. Login offline → Configuration → Play spawn against managed Pumpkin 26.2.
+   Vanilla remains an optional compatibility reference, not a Java runtime requirement.
 5. `mc-world` chunk types + mesher input structs (registries from cache fixtures).
 6. `mc-render` cube → chunk → atlas (synthetic data first, cache textures later).
 7. `mc-client` tick loop + movement physics tests.

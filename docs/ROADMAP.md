@@ -10,6 +10,7 @@
   Foundation complete: signed integers, bounded strings/positions, frames/zlib,
   and runnable status ping. Remaining: NBT, other P1 types, and coverage-guided fuzzing.
 - [ ] P2 Headless join (offline server) → spawn. Acceptance: bot receives Login(play)+chunks, stays 60s. No auth.
+  Local runtime: pinned Pumpkin process (`SINGLEPLAYER.md`), no custom server.
 - [ ] P3 `mc-world` chunk types + registries from cache fixtures. Acceptance: parse recorded chunks.
 - [ ] P4 `mc-render` chunk rendering. Acceptance: synthetic chunk 60 FPS debug HUD, no assets committed.
 - [ ] P5 Tick/physics parity. Acceptance: movement tests within epsilon of vanilla observations.
@@ -18,3 +19,6 @@
 - [ ] Future (not now): Rust mod API (`cdylib` + sandbox). Now: only `ModHost` trait stub, no loader.
 
 Non-goals v1: Bedrock support, server implementation, asset redistribution, Bevy migration.
+
+Singleplayer uses Pumpkin for simulation. First playable client milestone:
+movement + breaking/placing blocks + save/reload. Pause is deferred.

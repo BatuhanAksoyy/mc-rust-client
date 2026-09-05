@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Launcher: resolve piston-meta, verify SHA1, bootstrap cache. Never vendors jars.
 
+pub mod pumpkin;
+
 /// Piston endpoints (see `docs/SOURCE_OF_TRUTH.md`).
 pub const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
