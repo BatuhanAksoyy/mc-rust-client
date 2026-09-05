@@ -1,0 +1,13 @@
+[package]
+name = "mc-render"
+version = "0.1.0"
+edition = "2021"
+description = "wgpu renderer (Vulkan/Metal/DX12/GL). No game logic."
+
+[dependencies]
+thiserror = "2"
+wgpu = "26"
+winit = "0.30"
+glam = "0.30"
+image = "0.25"
+mc-world = { path = "../mc-world" }
