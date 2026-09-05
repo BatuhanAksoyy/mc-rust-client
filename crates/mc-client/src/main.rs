@@ -14,6 +14,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Probe offline login through Play Login, print context, then disconnect.
+    Join {
+        /// Offline server hostname or IP address.
+        #[arg(default_value = "localhost")]
+        host: String,
+        /// Server TCP port.
+        #[arg(long, default_value_t = 25565, value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+        /// Development username (1–16 ASCII letters, digits or underscores).
+        #[arg(long, default_value = "RustPlayer")]
+        name: String,
+        /// Overall deadline through Play Login, in milliseconds.
+        #[arg(long, default_value_t = 30_000, value_parser = clap::value_parser!(u64).range(1..=300_000))]
+        timeout_ms: u64,
+    },
     /// Start a managed local Pumpkin server (headless; gameplay client follows).
     Local {
         /// Path to the pinned Pumpkin executable.
@@ -49,6 +64,30 @@ enum Command {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::Join { host, port, name, timeout_ms } => {
+            match mc_client::join::connect(&host, port, &name, Duration::from_millis(timeout_ms))
+                .await
+            {
+                Ok(joined) => {
+                    println!(
+                        "Reached Play: player={}, entity={}, dimension={}, registries={}, entries={}",
+                        joined.profile.name,
+                        joined.world.entity_id,
+                        joined.world.dimension_name,
+                        joined.registries.len(),
+                        joined.registries.entry_count()
+                    );
+                    eprintln!(
+                        "Headless join probe complete; disconnecting. Rendering/gameplay are not implemented yet."
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Local { pumpkin, session, port, startup_seconds, check } => {
             // Install the handler before startup, so Ctrl-C also cancels startup
             // and drops any partially started child.

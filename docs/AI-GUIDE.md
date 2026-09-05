@@ -21,6 +21,8 @@ below. Declared future-phase dependencies are added when their code lands.
 3. Handshake + Status ping implemented against a local dummy TCP server; run
    `cargo run -p mc-client -- status localhost`.
 4. Login offline → Configuration → Play spawn against managed Pumpkin 26.2.
+   `JOIN.md` scopes the first headless increment through decoded Play Login;
+   spawn confirmation, chunks and rendering remain separate steps.
    Vanilla remains an optional compatibility reference, not a Java runtime requirement.
 5. `mc-world` chunk types + mesher input structs (registries from cache fixtures).
 6. `mc-render` cube → chunk → atlas (synthetic data first, cache textures later).
