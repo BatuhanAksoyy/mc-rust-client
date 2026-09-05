@@ -10,9 +10,11 @@ The first usable foundation is scoped and verified by `FOUNDATION.md`; it delive
 the transport/status path before NBT and login. Follow-up work resumes the order
 below. Declared future-phase dependencies are added when their code lands.
 
-1. `mc-protocol` primitives: VarInt, String, NBT, Position. Property tests. ✅ VarInt done.
-2. Packet framing + compression skeleton (no encryption yet — offline servers skip it).
-3. Handshake + Status ping against local dummy server (integration test).
+1. `mc-protocol` primitives: signed VarInt/VarLong, String, Position and fixed-width
+   reads have property/vector tests. NBT and remaining P1 types are next.
+2. Packet framing + bounded zlib implemented (no encryption yet).
+3. Handshake + Status ping implemented against a local dummy TCP server; run
+   `cargo run -p mc-client -- status localhost`.
 4. Login offline → Configuration (Registry Data parse from cache blob) → Play spawn (headless bot joins vanilla 26.2 server in offline/LAN mode).
 5. `mc-world` chunk types + mesher input structs (registries from cache fixtures).
 6. `mc-render` cube → chunk → atlas (synthetic data first, cache textures later).

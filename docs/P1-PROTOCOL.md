@@ -14,8 +14,8 @@ Target: join an **offline** vanilla 26.2 server (headless, no auth, no encryptio
 ## Task list (one PR each, smallest first)
 
 1. **Primitives** (`types.rs`): Boolean/Byte/UByte/Short/UShort/Int/Long/Float/Double
-   (big-endian), VarInt/VarLong (signed, ≤5/≤10 bytes, reject overlong — note: existing
-   `encode_varint` is unsigned-only, extend to signed per wiki pseudocode + sample vectors),
+   (big-endian), VarInt/VarLong (signed, ≤5/≤10 bytes, reject overlong and overflow;
+   implemented with sample vectors and property tests in the foundation),
    String (VarInt-prefixed UTF-8, UTF-16 length semantics), Identifier, UUID, Position
    (26/26/12), Angle, BitSet/Fixed BitSet, Prefixed Array/Optional, ID-or-X, ID Set.
    Tests: wiki sample vectors (VarInt table incl. negatives) + proptest round-trips.

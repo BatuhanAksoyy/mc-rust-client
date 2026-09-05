@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 thiserror = "2"
+bytes = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 proptest = "1"
+criterion = { version = "0.8", default-features = false }
+
+[[bench]]
+name = "codecs"
+harness = false

@@ -7,6 +7,8 @@
 
 - [ ] P0 Repo + CI + docs (this snapshot). Acceptance: `fmt/clippy/test/deny` green on 3 OS.
 - [ ] P1 `mc-protocol` 776 codec + tests. Acceptance: round-trip + fuzz clean, status ping works.
+  Foundation complete: signed integers, bounded strings/positions, frames/zlib,
+  and runnable status ping. Remaining: NBT, other P1 types, and coverage-guided fuzzing.
 - [ ] P2 Headless join (offline server) → spawn. Acceptance: bot receives Login(play)+chunks, stays 60s. No auth.
 - [ ] P3 `mc-world` chunk types + registries from cache fixtures. Acceptance: parse recorded chunks.
 - [ ] P4 `mc-render` chunk rendering. Acceptance: synthetic chunk 60 FPS debug HUD, no assets committed.
