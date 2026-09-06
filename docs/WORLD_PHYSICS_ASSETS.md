@@ -84,3 +84,26 @@ PY
 - Load from `~/.minecraft` install or Mojang CDN post-auth into `~/.cache/mc-rust-client/26.2/`.
 - Index `32.json` (5057 objects, ~480 MB total). Fetch on demand (atlas textures, lang, sounds), verify SHA1.
 - Never commit. `.gitignore` + CI guard enforce.
+
+### Block textures (`mc_render::atlas`)
+
+`RENDER.md` milestone 3: `Atlas::build` resolves real per-face block textures from
+`<cache>/mc-rust-client/26.2/client-extracted/assets/minecraft/` — a plain `unzip` of the
+pinned `client.jar` (never its compiled classes, just the `assets/` resource tree any
+resource pack or mod loader reads: blockstate JSON, block-model JSON, 16×16 PNGs). Produce
+it once, outside this client:
+
+```sh
+unzip -q "$CACHE/mc-rust-client/26.2/client.jar" -d "$CACHE/mc-rust-client/26.2/client-extracted"
+```
+
+Absent extraction degrades to `BlockRegistry`'s solid debug colors, same as an absent
+`block-states.json` — never required to run. The resolver follows each block's
+blockstate → model `parent`/`#slot` chain generically down to one of vanilla's cube base
+models; anything that doesn't bottom out there (multipart blockstates, liquids, tinted or
+non-cube models) is left unresolved by design, not a bug — see `RENDER.md` milestone 3.
+
+This is exactly the category of file this project's clean-room policy already permits
+(`AI-GUIDE.md`'s "reference by URL+version+symbol only" is about *source*, not the game's
+own public resource-file format): no Java, no decompilation, no mappings — plain JSON and
+PNGs Mojang ships for every resource pack to read.

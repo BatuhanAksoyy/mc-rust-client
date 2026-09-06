@@ -2,11 +2,18 @@
 //! values directly; no network, GPU or window needed.
 
 use mc_protocol::chunk::{ChunkSection, LevelChunk, LightData, Palette, PalettedContainer};
+use mc_render::atlas::Atlas;
 use mc_render::mesh::mesh_chunk;
 use mc_world::{BlockRegistry, Chunk};
 
 fn registry() -> BlockRegistry {
     BlockRegistry::from_names(vec!["minecraft:air".to_owned(), "minecraft:stone".to_owned()])
+}
+
+/// No extracted assets in these synthetic tests: every block falls back to
+/// `BlockRegistry`'s solid debug color, same as before atlas support landed.
+fn empty_atlas() -> Atlas {
+    Atlas::build(std::path::Path::new(""), std::iter::empty()).0
 }
 
 const fn no_light() -> LightData {
@@ -53,7 +60,7 @@ fn chunk_with(indices: Vec<u32>) -> Chunk {
 #[test]
 fn an_all_air_chunk_meshes_to_nothing() {
     let chunk = chunk_with(vec![0; 4096]);
-    let mesh = mesh_chunk(&chunk, &registry());
+    let mesh = mesh_chunk(&chunk, &registry(), &empty_atlas());
     assert!(mesh.vertices.is_empty());
 }
 
@@ -65,7 +72,7 @@ fn one_isolated_block_emits_all_six_faces() {
     let mut indices = vec![0; 4096];
     indices[0] = 1; // (x=0, z=0, y=0) per x-fastest-then-z-then-y ordering.
     let chunk = chunk_with(indices);
-    let mesh = mesh_chunk(&chunk, &registry());
+    let mesh = mesh_chunk(&chunk, &registry(), &empty_atlas());
     assert_eq!(mesh.vertices.len(), 6 * 6); // 6 faces, 2 triangles (6 vertices) each.
 }
 
@@ -77,7 +84,7 @@ fn two_adjacent_blocks_hide_their_shared_face() {
     indices[0] = 1;
     indices[1] = 1;
     let chunk = chunk_with(indices);
-    let mesh = mesh_chunk(&chunk, &registry());
+    let mesh = mesh_chunk(&chunk, &registry(), &empty_atlas());
     assert_eq!(mesh.vertices.len(), 2 * 5 * 6); // 5 visible faces each, not 6.
 }
 
@@ -92,7 +99,7 @@ fn a_fully_enclosed_block_is_never_meshed() {
         indices[index(x, y, z)] = 1;
     }
     let chunk = chunk_with(indices);
-    let mesh = mesh_chunk(&chunk, &registry());
+    let mesh = mesh_chunk(&chunk, &registry(), &empty_atlas());
     // The core is fully enclosed (0 faces); each of its 6 neighbors is
     // exposed on its other 5 sides (the 6th touches the core).
     assert_eq!(mesh.vertices.len(), 6 * 5 * 6);

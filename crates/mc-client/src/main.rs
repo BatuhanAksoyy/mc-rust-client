@@ -203,7 +203,8 @@ async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> E
     };
     let registry = mc_world::BlockRegistry::load_cached("26.2");
     let chunk = mc_world::Chunk::from_level(level_chunk);
-    let mesh = mc_render::mesh::mesh_chunk(&chunk, &registry);
+    let (atlas, atlas_image) = build_atlas(&chunk, &registry);
+    let mesh = mc_render::mesh::mesh_chunk(&chunk, &registry, &atlas);
     eprintln!(
         "Rendering chunk ({}, {}): {} sections, {} vertices. WASD to move, mouse to look, \
          Space to jump, Shift to sneak, Ctrl to sprint. Escape or close the window to exit.",
@@ -214,13 +215,47 @@ async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> E
     );
     let spawn = spawn_position(&chunk, &registry);
     let game = mc_client::play::RenderGame::new(chunk, registry, spawn);
-    match mc_render::run(mesh, "mc-rust-client", game) {
+    match mc_render::run(mesh, atlas_image, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Resolve real block textures for every distinct block name in `chunk`
+/// (`docs/RENDER.md` milestone 3), reading the extracted client jar's
+/// resource files from cache (`mc_render::atlas::assets_root`). Silently
+/// yields an atlas with nothing resolved when the extraction is absent —
+/// `mesh_chunk` already falls back to `registry`'s solid debug colors, same
+/// as before this milestone.
+fn build_atlas(
+    chunk: &mc_world::Chunk,
+    registry: &mc_world::BlockRegistry,
+) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage) {
+    let mut names = std::collections::HashSet::new();
+    if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
+        for y in 0..height {
+            for z in 0..16 {
+                for x in 0..16 {
+                    if let Some(id) = chunk.block_at(x, y, z)
+                        && let Some(name) = registry.name(id)
+                    {
+                        names.insert(name);
+                    }
+                }
+            }
+        }
+    }
+    let Some(assets_root) = mc_render::atlas::assets_root("26.2") else {
+        eprintln!(
+            "no extracted client assets cached (see docs/WORLD_PHYSICS_ASSETS.md); \
+             rendering with solid debug colors instead of real textures"
+        );
+        return mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
+    };
+    mc_render::atlas::Atlas::build(&assets_root, names)
 }
 
 /// Spawn above the chunk's center column, a few blocks over its highest

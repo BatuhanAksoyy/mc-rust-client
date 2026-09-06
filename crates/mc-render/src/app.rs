@@ -72,13 +72,20 @@ pub trait Game {
 }
 
 /// Open a window titled `title`, capture the mouse for FPS-style look, and
-/// drive `game` once per frame, rendering `mesh` until the window closes or
-/// Escape is pressed.
+/// drive `game` once per frame, rendering `mesh`.
+///
+/// `mesh` is textured from `atlas` (see `crate::atlas::Atlas`) until the
+/// window closes or Escape is pressed.
 ///
 /// Blocks the calling thread: `winit` requires the platform's main thread on
 /// macOS, so this must not run inside a Tokio runtime (fetch any network
 /// data first, then call this).
-pub fn run(mesh: Mesh, title: &str, game: impl Game + 'static) -> Result<(), RunError> {
+pub fn run(
+    mesh: Mesh,
+    atlas: image::RgbaImage,
+    title: &str,
+    game: impl Game + 'static,
+) -> Result<(), RunError> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     // A no-op on macOS (device events are always delivered there) but needed
@@ -87,6 +94,7 @@ pub fn run(mesh: Mesh, title: &str, game: impl Game + 'static) -> Result<(), Run
     let mut app = App {
         title: title.to_owned(),
         mesh,
+        atlas,
         game,
         window: None,
         renderer: None,
@@ -113,6 +121,7 @@ struct Keys {
 struct App<G: Game> {
     title: String,
     mesh: Mesh,
+    atlas: image::RgbaImage,
     game: G,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -137,7 +146,7 @@ impl<G: Game> ApplicationHandler for App<G> {
                 return;
             }
         };
-        let mut renderer = match Renderer::new(window.clone()) {
+        let mut renderer = match Renderer::new(window.clone(), &self.atlas) {
             Ok(renderer) => renderer,
             Err(error) => {
                 eprintln!("failed to create renderer: {error}");

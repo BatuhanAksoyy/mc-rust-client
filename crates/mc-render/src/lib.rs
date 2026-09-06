@@ -2,6 +2,7 @@
 //! wgpu renderer shell. See `docs/RENDER.md`.
 
 mod app;
+pub mod atlas;
 pub mod mesh;
 mod renderer;
 

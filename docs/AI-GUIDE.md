@@ -29,7 +29,9 @@ below. Declared future-phase dependencies are added when their code lands.
 6. **Done.** `mc-render` cube → chunk → window (`RENDER.md` milestones 1-2): synthetic
    per-block colors, no assets required yet. `mc-client render <host>` joins, meshes
    the first received chunk, and shows it — verified against a live Pumpkin server.
-   A texture atlas from cached assets (`RENDER.md` milestone 3) is later work.
+   A texture atlas from cached assets (`RENDER.md` milestone 3) is **partly done**:
+   plain full-cube blocks now render real vanilla textures; a visual diff test is
+   still open, see `WORLD_PHYSICS_ASSETS.md`.
 7. **Done.** `mc-client` tick loop + movement physics tests. `physics.rs` implements
    Java-Edition-matching walk/sprint/sneak speed, gravity, jump, and AABB-vs-voxel
    collision against a resolved chunk — deterministic, unit-tested without a

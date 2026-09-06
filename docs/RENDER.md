@@ -36,9 +36,16 @@ Milestones:
    captured (`CursorGrabMode::Locked`, falling back to `Confined`) for FPS-style look.
    The old `camera::OrbitCamera` is gone — nothing used it once real look/move input
    landed.
-3. Atlas + lighting + fog matching vanilla screenshots (visual diff test, assets from cache).
-   Needs a block-state → model/texture resolver; `BlockRegistry` currently only has
-   name/color, not model geometry.
+3. **Partly done.** `atlas::Atlas` resolves real block textures from a locally extracted
+   client jar (`WORLD_PHYSICS_ASSETS.md`'s ASSETS section): blockstate → model → texture,
+   following the `parent`/`#slot` chain generically down to one of vanilla's cube base
+   models (`cube_all`, `cube_column`(`_horizontal`), `cube_bottom_top`, `cube`). Covers
+   plain full-cube blocks (stone, dirt, ores, logs, planks, sand, wool, concrete, ...);
+   `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for anything else
+   (multipart blockstates — fences/walls/stairs — liquids, and tinted/non-cube models
+   like leaves and grass_block). No mipmaps/anisotropy yet (one nearest-filtered texture,
+   matching vanilla's own default sampling); lighting/fog still fixed per-face brightness.
+   Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.
 
