@@ -209,6 +209,27 @@ fn named_color(name: &str) -> Option<[f32; 3]> {
         "minecraft:netherrack" => [0.44, 0.20, 0.20],
         "minecraft:end_stone" => [0.87, 0.85, 0.60],
         "minecraft:obsidian" | "minecraft:crying_obsidian" => [0.08, 0.06, 0.13],
+        // Grass-tinted cross/lily-pad models (`atlas::model`'s `tinted_cross` and
+        // `tinted_flower_pot_cross` parents) reuse `mesh::push_baked_quad`'s tint
+        // slot for the real per-biome grass-color multiply Java samples from
+        // a biome colormap; without biome data we have no such sample, so
+        // these fell through to `hashed_color`'s per-ID placeholder instead —
+        // a value with no relation to grass green, sometimes close enough to
+        // the sky/water behind a block to look "see-through" instead of
+        // wrong-colored. `minecraft:grass_block`'s own curated green above is
+        // this client's one flat stand-in for the real biome sample; reuse it
+        // here so every grass-family prop reads as grass instead of noise.
+        "minecraft:short_grass"
+        | "minecraft:tall_grass"
+        | "minecraft:fern"
+        | "minecraft:large_fern"
+        | "minecraft:sugar_cane"
+        | "minecraft:bamboo_sapling"
+        | "minecraft:bush"
+        | "minecraft:potted_fern" => [0.29, 0.62, 0.27],
+        // `vine`/`lily_pad` are tinted from the foliage (not grass) colormap
+        // in Java; reuse the same flat foliage green curated for `_leaves` above.
+        "minecraft:vine" | "minecraft:lily_pad" => [0.20, 0.45, 0.13],
         _ => return None,
     })
 }
@@ -265,6 +286,24 @@ mod tests {
         assert!(!registry.is_air(1));
         assert!(!registry.is_air(2)); // Unknown, not air.
         assert_eq!(registry.color(1).map(f32::to_bits), [0.5, 0.5, 0.5].map(f32::to_bits)); // Stone.
+    }
+
+    #[test]
+    fn grass_family_props_get_the_curated_grass_tint_not_a_hashed_placeholder() {
+        let json = r#"{"protocol":776,"version":"26.2","names":[
+            "minecraft:short_grass","minecraft:tall_grass","minecraft:fern",
+            "minecraft:large_fern","minecraft:sugar_cane","minecraft:bamboo_sapling",
+            "minecraft:bush","minecraft:potted_fern","minecraft:vine","minecraft:lily_pad"
+        ]}"#;
+        let registry = BlockRegistry::from_report_json(json).unwrap();
+        let grass = [0.29, 0.62, 0.27].map(f32::to_bits);
+        let foliage = [0.20, 0.45, 0.13].map(f32::to_bits);
+        for id in 0..8 {
+            assert_eq!(registry.color(id).map(f32::to_bits), grass, "id {id}");
+        }
+        for id in 8..10 {
+            assert_eq!(registry.color(id).map(f32::to_bits), foliage, "id {id}");
+        }
     }
 
     #[test]

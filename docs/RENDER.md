@@ -76,6 +76,13 @@ Milestones:
    No mipmaps/anisotropy yet (one nearest-filtered texture, matching
    vanilla's own default sampling); lighting/fog still fixed per-face
    brightness.
+   Tinted faces (`tintindex`, real per-biome colormap sampling in Java)
+   multiply by `BlockRegistry::color`'s flat curated-by-name/hashed-by-ID
+   stand-in (no biome data yet) instead — grass-family cross props
+   (`short_grass`, `fern`, `large_fern`, `sugar_cane`, `bamboo_sapling`,
+   `bush`, `potted_fern`) and `vine`/`lily_pad` are now curated (grass/foliage
+   green) so they read as green instead of an unrelated per-ID hash color
+   that could read as washed-out/"see-through" against real terrain.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.
