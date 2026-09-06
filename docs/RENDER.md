@@ -72,7 +72,12 @@ Milestones:
    for structural partial shapes like fences/walls/stairs); `mc-client`
    feeds the resolved non-solid IDs into `BlockRegistry::with_non_solid` so
    collision matches what actually rendered instead of treating every
-   non-air block as a full solid cube.
+   non-air block as a full solid cube. `mesh_chunk`'s own neighbor-face
+   culling (`mesh.rs`) follows the same flag rather than `is_air` alone: a
+   cross-shaped decoration is non-air but covers almost none of a
+   neighboring face, so a solid block standing next to or under one (a
+   mushroom, a flower, tall grass, ...) keeps that face instead of having it
+   culled away as if the decoration were a real occluder.
    No mipmaps/anisotropy yet (one nearest-filtered texture, matching
    vanilla's own default sampling); lighting/fog still fixed per-face
    brightness.

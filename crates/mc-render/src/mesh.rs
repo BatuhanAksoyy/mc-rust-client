@@ -51,9 +51,15 @@ const FACES: [(i32, i32, i32, f32); 6] = [
     (-1, 0, 0, 0.6),
 ];
 
-/// Mesh every visible face of every non-air block in `chunk`. A face is
-/// visible when its neighbor is missing (chunk edge/top/bottom — there is no
-/// neighbor chunk to consult yet) or is air.
+/// Mesh every visible face of every non-air block in `chunk`.
+///
+/// A face is visible when its neighbor is missing (chunk edge/top/bottom —
+/// there is no neighbor chunk to consult yet) or isn't solid — air, same as
+/// ever, but also any walk-through decoration (`BlockRegistry::is_solid`,
+/// `RENDER.md` milestone 3): a cross-shaped plant standing on a block is
+/// non-air, but nowhere near covering that block's top face, so culling it
+/// away like a real neighbor exposed a hole down into whatever sat below
+/// instead.
 #[must_use]
 pub fn mesh_chunk(chunk: &Chunk, registry: &BlockRegistry, atlas: &Atlas) -> Mesh {
     mesh_chunks(std::slice::from_ref(chunk), chunk.position, registry, atlas)
@@ -91,7 +97,7 @@ pub fn mesh_chunks(
                         for quad in &model.quads {
                             let visible = quad.cull.is_none_or(|(dx, dy, dz)| {
                                 neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
-                                    .is_none_or(|neighbor| registry.is_air(neighbor))
+                                    .is_none_or(|neighbor| !registry.is_solid(neighbor))
                             });
                             if visible {
                                 push_baked_quad(&mut vertices, block, quad, registry.color(id));
@@ -101,7 +107,7 @@ pub fn mesh_chunks(
                     }
                     for &(dx, dy, dz, brightness) in &FACES {
                         let visible = neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
-                            .is_none_or(|neighbor| registry.is_air(neighbor));
+                            .is_none_or(|neighbor| !registry.is_solid(neighbor));
                         if visible {
                             push_face(
                                 &mut vertices,

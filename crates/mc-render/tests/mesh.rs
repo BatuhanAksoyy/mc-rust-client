@@ -27,14 +27,16 @@ const fn no_light() -> LightData {
     }
 }
 
-/// One section with every entry set from `indices` (palette `[air, stone]`).
+/// One section with every entry set from `indices` (palette `[air, stone,
+/// short_grass]` — only the first two are used outside this file's own
+/// non-solid-neighbor test).
 fn section_from(indices: Vec<u32>) -> ChunkSection {
     ChunkSection {
         block_count: 0,
         fluid_count: 0,
         block_states: PalettedContainer {
             bits_per_entry: 4,
-            palette: Palette::Indirect(vec![0, 1]),
+            palette: Palette::Indirect(vec![0, 1, 2]),
             indices,
         },
         biomes: PalettedContainer {
@@ -107,6 +109,32 @@ fn a_fully_enclosed_block_is_never_meshed() {
     // The core is fully enclosed (0 faces); each of its 6 neighbors is
     // exposed on its other 5 sides (the 6th touches the core).
     assert_eq!(mesh.vertices.len(), 6 * 5 * 6);
+}
+
+#[test]
+fn a_non_solid_neighbor_does_not_hide_the_solid_face_beside_it() {
+    // Stone at (0,0,0), a walk-through decoration (`with_non_solid`, standing
+    // in for a cross-shaped plant like a mushroom or flower) directly above
+    // it at (0,1,0). The decoration is non-air, but its cross shape covers
+    // almost none of the stone's top face — the real bug this guards
+    // (`RENDER.md` milestone 3): culling on `is_air` alone treated any
+    // non-air neighbor as a full occluder, hiding the stone's top face and
+    // exposing whatever sat below it through the "hole" instead.
+    let registry = BlockRegistry::from_names(vec![
+        "minecraft:air".to_owned(),
+        "minecraft:stone".to_owned(),
+        "minecraft:short_grass".to_owned(),
+    ])
+    .with_non_solid([2]);
+    let mut indices = vec![0; 4096];
+    indices[0] = 1; // stone at (0,0,0)
+    indices[256] = 2; // short_grass at (0,1,0): (y*16+z)*16+x = (1*16+0)*16+0.
+    let chunk = chunk_with(indices);
+    let mesh = mesh_chunk(&chunk, &registry, &empty_atlas());
+    // Stone keeps all 6 faces (its "up" neighbor doesn't occlude); the
+    // decoration keeps 5 (its "down" face is still hidden by the real, solid
+    // stone beneath it).
+    assert_eq!(mesh.vertices.len(), (6 + 5) * 6);
 }
 
 #[test]
