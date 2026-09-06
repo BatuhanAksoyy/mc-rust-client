@@ -36,14 +36,15 @@ below. Declared future-phase dependencies are added when their code lands.
    Java-Edition-matching walk/sprint/sneak speed, gravity, jump, and AABB-vs-voxel
    collision against a resolved chunk — deterministic, unit-tested without a
    renderer or network (`WORLD_PHYSICS_ASSETS.md`).
-8. **Movement/camera done; streaming still open.** `mc-client render` drives a real
+8. **Movement/camera and initial-view collision done; streaming still open.** `mc-client render` drives a real
    first-person camera: WASD relative to mouse-look yaw, jump/sneak/sprint, gravity,
-   and collision against the one loaded chunk, at a fixed 20 TPS with render
+   and collision against every chunk in the loaded initial view, at a fixed 20 TPS with render
    interpolation (`play.rs`; `mc_render::Game` is the render-loop seam so `mc-render`
    still holds no game logic, `RENDER.md`). Continuous chunk streaming as the player
    moves is still open (still offline). Complete pre/post-spawn batches for an adjustable
-   initial render distance now render with world-relative placement and cross-chunk face
-   culling (`RENDER.md` milestone 2c); this is not continuous streaming and does not
+   initial render distance now render with world-relative placement, cross-chunk face
+   culling, and matching cross-chunk collision (`RENDER.md` milestone 2c); this is not
+   continuous streaming and does not
    keep the Play connection alive in the window yet.
 9. Perf pass + cross-platform CI.
 10. LAST: `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI) + legal review.

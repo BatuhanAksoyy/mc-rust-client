@@ -6,7 +6,9 @@
 - 26.2 additions: sulfur caves biome, sulfur/cinnabar block variants, sulfur cube mob (behavior later).
 - Implementation: `Chunk` (dense, resolved block-state IDs per position, converted once from
   `mc_protocol::chunk::LevelChunk`'s paletted containers — see `JOIN.md`), `BlockRegistry`
-  (numeric ID → name/color).
+  (numeric ID → name/color), and `World` (an immutable loaded-chunk index whose coordinates
+  are relative to a selected origin chunk). `World::block_at` uses Euclidean division so
+  physics crosses positive and negative chunk boundaries without per-tick rebuilding.
 - No I/O in core types; `mc-launcher`/`mc-client` handle region file loading.
 - Tests: synthetic `LevelChunk` values + `BlockRegistry` unit tests. No recorded vanilla
   blob is needed or committed — join-path decoding is already verified against a live
@@ -71,9 +73,10 @@ PY
   displacements as well as steady speed so a wrong recurrence cannot hide behind
   the same terminal velocity. Non-default block friction, sneak ledge prevention,
   water, ladders and slime bounce are not modeled yet. Collision is discrete
-  AABB-vs-voxel against one resolved
-  `mc_world::Chunk` (no continuous sweep, no cross-chunk collision — both are fine
-  at this milestone's single-chunk scope, `AI-GUIDE.md` step 8). Fully unit-tested
+  AABB-vs-voxel against every resolved chunk in an immutable `mc_world::World`;
+  missing/unloaded chunks are empty. A boundary regression covers a wall in the
+  neighboring chunk. Collision currently treats each non-air state as a full cube;
+  state-specific voxel shapes and continuous sweep remain open. Fully unit-tested
   without a renderer or network.
 - `play.rs` is the `mc_render::Game` impl driving this at 20 TPS from `TickScheduler`,
   applying mouse-look every frame (not gated by the tick, matching vanilla) and

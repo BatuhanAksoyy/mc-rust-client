@@ -6,13 +6,13 @@
 //! `mc-render` holds no game logic (`docs/RENDER.md`) — [`RenderGame`] is the
 //! [`mc_render::Game`] implementation that gives `mc-client render`'s window
 //! WASD-relative-to-look movement, sprint/sneak speed, gravity, jump, and
-//! collision against the one loaded chunk (`AI-GUIDE.md` steps 7-8).
+//! collision against the loaded initial chunk view (`AI-GUIDE.md` steps 7-8).
 
 use std::{num::NonZeroU32, time::Duration};
 
 use glam::{Mat4, Vec3};
 use mc_render::{Game, InputState};
-use mc_world::{BlockRegistry, Chunk};
+use mc_world::{BlockRegistry, World};
 
 use crate::{
     physics::{self, PlayerController},
@@ -31,9 +31,9 @@ const FOV_Y: f32 = 70_f32.to_radians();
 const MAX_CATCH_UP_TICKS: u32 = 5;
 
 /// The `mc-client render` window's [`mc_render::Game`]: owns player physics
-/// state against one resolved chunk and turns it into a camera each frame.
+/// state against a resolved chunk view and turns it into a camera each frame.
 pub struct RenderGame {
-    chunk: Chunk,
+    world: World,
     registry: BlockRegistry,
     scheduler: TickScheduler,
     previous: PlayerController,
@@ -45,15 +45,15 @@ pub struct RenderGame {
 
 impl RenderGame {
     /// Spawn a player standing (feet) at `position`, chunk-local coordinates,
-    /// looking down -Z, above `chunk`.
+    /// looking down -Z, inside `world`.
     #[must_use]
-    pub const fn new(chunk: Chunk, registry: BlockRegistry, position: Vec3) -> Self {
+    pub const fn new(world: World, registry: BlockRegistry, position: Vec3) -> Self {
         let controller = PlayerController::spawn(position);
         let scheduler = TickScheduler::new(
             NonZeroU32::new(MAX_CATCH_UP_TICKS).expect("MAX_CATCH_UP_TICKS is nonzero"),
         );
         Self {
-            chunk,
+            world,
             registry,
             scheduler,
             previous: controller,
@@ -87,7 +87,7 @@ impl Game for RenderGame {
                 sprint: input.sprint,
                 yaw: self.yaw,
             };
-            self.current.tick(wish, &self.chunk, &self.registry);
+            self.current.tick(wish, &self.world, &self.registry);
         }
         self.alpha = batch.alpha;
     }

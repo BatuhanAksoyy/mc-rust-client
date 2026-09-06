@@ -38,13 +38,12 @@
 //! horizontal acceleration matches vanilla's per-tick constants but not its
 //! slipperiness-cubed friction formula for non-default-friction blocks.
 //!
-//! Collision is AABB vs. a single resolved chunk's voxel grid
-//! (`mc_world::Chunk`); coordinates are chunk-local, matching `mc_render::mesh`
-//! (x/z in `0..16`, y from the first decoded section's bottom). Multi-chunk
-//! collision is future work once chunk streaming lands (`AI-GUIDE.md` step 8).
+//! Collision is AABB vs. the loaded chunks in `mc_world::World`; coordinates
+//! are relative to the render-origin chunk and cross boundaries in either
+//! direction. Missing chunks are empty until continuous streaming lands.
 
 use glam::Vec3;
-use mc_world::{BlockRegistry, Chunk};
+use mc_world::{BlockRegistry, World};
 
 /// Per-tick constants (20 TPS), in blocks unless noted. Speeds are the
 /// wiki's blocks/second values divided by 20.
@@ -150,7 +149,7 @@ impl PlayerController {
     /// drag factor used this tick are picked once, from the on-ground state
     /// as it stands entering the tick (last tick's result) — not
     /// re-evaluated after this tick's own collision changes it.
-    pub fn tick(&mut self, input: Input, chunk: &Chunk, registry: &BlockRegistry) {
+    pub fn tick(&mut self, input: Input, world: &World, registry: &BlockRegistry) {
         if input.jump && self.on_ground {
             self.velocity.y = constants::JUMP_VELOCITY;
         }
@@ -189,7 +188,7 @@ impl PlayerController {
         self.velocity.z = direction.z.mul_add(accel, self.velocity.z);
 
         self.on_ground = false;
-        self.move_and_collide(chunk, registry);
+        self.move_and_collide(world, registry);
 
         self.velocity.y -= constants::GRAVITY;
         self.velocity.y *= constants::VERTICAL_DRAG;
@@ -197,8 +196,8 @@ impl PlayerController {
         self.velocity.z *= horizontal_drag;
     }
 
-    fn move_and_collide(&mut self, chunk: &Chunk, registry: &BlockRegistry) {
-        let (dy, hit) = move_axis(chunk, registry, self.position, self.velocity.y, Axis::Y);
+    fn move_and_collide(&mut self, world: &World, registry: &BlockRegistry) {
+        let (dy, hit) = move_axis(world, registry, self.position, self.velocity.y, Axis::Y);
         self.position.y += dy;
         if hit {
             if self.velocity.y < 0.0 {
@@ -206,12 +205,12 @@ impl PlayerController {
             }
             self.velocity.y = 0.0;
         }
-        let (dx, hit) = move_axis(chunk, registry, self.position, self.velocity.x, Axis::X);
+        let (dx, hit) = move_axis(world, registry, self.position, self.velocity.x, Axis::X);
         self.position.x += dx;
         if hit {
             self.velocity.x = 0.0;
         }
-        let (dz, hit) = move_axis(chunk, registry, self.position, self.velocity.z, Axis::Z);
+        let (dz, hit) = move_axis(world, registry, self.position, self.velocity.z, Axis::Z);
         self.position.z += dz;
         if hit {
             self.velocity.z = 0.0;
@@ -222,7 +221,7 @@ impl PlayerController {
         // just zeroed velocity.y — would never otherwise be detected as
         // grounded. Probe directly underfoot to cover that case.
         if !self.on_ground {
-            self.on_ground = is_touching_ground(chunk, registry, self.position);
+            self.on_ground = is_touching_ground(world, registry, self.position);
         }
     }
 }
@@ -231,7 +230,7 @@ impl PlayerController {
 /// block, independent of velocity.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 // Chunk-local coordinates are always small.
-fn is_touching_ground(chunk: &Chunk, registry: &BlockRegistry, position: Vec3) -> bool {
+fn is_touching_ground(world: &World, registry: &BlockRegistry, position: Vec3) -> bool {
     const EPSILON: f32 = 1e-3;
     let half = constants::HALF_WIDTH;
     let y = (position.y - EPSILON).floor() as i32;
@@ -239,7 +238,7 @@ fn is_touching_ground(chunk: &Chunk, registry: &BlockRegistry, position: Vec3) -
     let x1 = (position.x + half - EPSILON).floor() as i32;
     let z0 = (position.z - half).floor() as i32;
     let z1 = (position.z + half - EPSILON).floor() as i32;
-    (x0..=x1).any(|x| (z0..=z1).any(|z| is_solid(chunk, registry, x, y, z)))
+    (x0..=x1).any(|x| (z0..=z1).any(|z| is_solid(world, registry, x, y, z)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,8 +248,8 @@ enum Axis {
     Z,
 }
 
-fn is_solid(chunk: &Chunk, registry: &BlockRegistry, x: i32, y: i32, z: i32) -> bool {
-    chunk.block_at(x, y, z).is_some_and(|id| !registry.is_air(id))
+fn is_solid(world: &World, registry: &BlockRegistry, x: i32, y: i32, z: i32) -> bool {
+    world.block_at(x, y, z).is_some_and(|id| !registry.is_air(id))
 }
 
 /// Clamp `delta` (movement along `axis`, starting from `position`) so the
@@ -264,7 +263,7 @@ fn is_solid(chunk: &Chunk, registry: &BlockRegistry, x: i32, y: i32, z: i32) -> 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 // Chunk-local coordinates and per-tick deltas are always small.
 fn move_axis(
-    chunk: &Chunk,
+    world: &World,
     registry: &BlockRegistry,
     position: Vec3,
     delta: f32,
@@ -310,9 +309,9 @@ fn move_axis(
         for a in f1_lo..=f1_hi {
             for b in f2_lo..=f2_hi {
                 let blocked = match axis {
-                    Axis::X => is_solid(chunk, registry, moving, a, b),
-                    Axis::Y => is_solid(chunk, registry, a, moving, b),
-                    Axis::Z => is_solid(chunk, registry, a, b, moving),
+                    Axis::X => is_solid(world, registry, moving, a, b),
+                    Axis::Y => is_solid(world, registry, a, moving, b),
+                    Axis::Z => is_solid(world, registry, a, b, moving),
                 };
                 if !blocked {
                     continue;
@@ -334,7 +333,7 @@ fn move_axis(
 #[cfg(test)]
 mod tests {
     use mc_protocol::chunk::{ChunkSection, LevelChunk, LightData, Palette, PalettedContainer};
-    use mc_world::{BlockRegistry, Chunk};
+    use mc_world::{BlockRegistry, Chunk, ChunkPos, World};
 
     use super::{Input, PlayerController, Vec3, constants};
 
@@ -350,7 +349,7 @@ mod tests {
     }
 
     /// One section; `is_solid(x, y, z)` decides each entry (palette `[air, stone]`).
-    fn chunk_from(is_solid: impl Fn(i32, i32, i32) -> bool) -> Chunk {
+    fn raw_chunk_at(position: ChunkPos, is_solid: impl Fn(i32, i32, i32) -> bool) -> Chunk {
         let mut indices = vec![0_u32; 4096];
         for y in 0..16 {
             for z in 0..16 {
@@ -377,8 +376,8 @@ mod tests {
             },
         };
         let level = LevelChunk {
-            x: 0,
-            z: 0,
+            x: position.x,
+            z: position.z,
             heightmaps: Vec::new(),
             sections: vec![section],
             block_entities: Vec::new(),
@@ -387,12 +386,17 @@ mod tests {
         Chunk::from_level(&level)
     }
 
-    fn empty_chunk() -> Chunk {
+    fn chunk_from(is_solid: impl Fn(i32, i32, i32) -> bool) -> World {
+        let origin = ChunkPos { x: 0, z: 0 };
+        World::new(origin, [raw_chunk_at(origin, is_solid)])
+    }
+
+    fn empty_chunk() -> World {
         chunk_from(|_, _, _| false)
     }
 
     /// Solid floor across the whole section at y = 0 (occupies world space `y in [0, 1)`).
-    fn floor_chunk() -> Chunk {
+    fn floor_chunk() -> World {
         chunk_from(|_, y, _| y == 0)
     }
 
@@ -573,5 +577,25 @@ mod tests {
             player.tick(Input { right: true, sprint: true, ..still(0.0) }, &chunk, &registry);
         }
         assert!(player.position.x + constants::HALF_WIDTH <= 9.0 + 1e-4, "{}", player.position.x);
+    }
+
+    #[test]
+    fn a_wall_in_an_adjacent_chunk_blocks_horizontal_movement() {
+        let origin = ChunkPos { x: 4, z: -2 };
+        let east = ChunkPos { x: 5, z: -2 };
+        let world = World::new(
+            origin,
+            [
+                raw_chunk_at(origin, |_, y, _| y == 0),
+                raw_chunk_at(east, |x, y, _| x == 0 || y == 0),
+            ],
+        );
+        let registry = registry();
+        let mut player = PlayerController::spawn(Vec3::new(15.6, 1.0, 8.0));
+        for _ in 0..20 {
+            player.tick(Input { right: true, sprint: true, ..still(0.0) }, &world, &registry);
+        }
+        assert!(player.position.x + constants::HALF_WIDTH <= 16.0 + 1e-4, "{}", player.position.x);
+        assert!(player.on_ground, "the neighboring chunk's floor must also support the player");
     }
 }

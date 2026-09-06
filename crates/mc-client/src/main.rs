@@ -224,11 +224,10 @@ async fn run_render(
     let chunks: Vec<_> = joined.chunks.iter().map(mc_world::Chunk::from_level).collect();
     let origin = select_origin_chunk(&chunks, joined.spawn.x, joined.spawn.z, joined.center_chunk)
         .expect("a nonempty chunk batch always selects an origin");
-    let collision_chunk = chunks
+    let origin_chunk = chunks
         .iter()
         .find(|chunk| chunk.position == origin)
-        .expect("the selected origin always belongs to the chunk batch")
-        .clone();
+        .expect("the selected origin always belongs to the chunk batch");
     let (atlas, atlas_image) = build_atlas(&chunks, &registry);
     let mesh = mc_render::mesh::mesh_chunks(&chunks, origin, &registry, &atlas);
     eprintln!(
@@ -239,8 +238,9 @@ async fn run_render(
         origin.z,
         mesh.vertices.len()
     );
-    let spawn = spawn_position(&collision_chunk, &registry);
-    let game = mc_client::play::RenderGame::new(collision_chunk, registry, spawn);
+    let spawn = spawn_position(origin_chunk, &registry);
+    let world = mc_world::World::new(origin, chunks);
+    let game = mc_client::play::RenderGame::new(world, registry, spawn);
     match mc_render::run(mesh, atlas_image, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

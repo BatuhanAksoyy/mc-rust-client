@@ -3,9 +3,11 @@
 
 mod chunk;
 mod registry;
+mod world;
 
 pub use chunk::Chunk;
 pub use registry::{BlockRegistry, BlockState};
+pub use world::World;
 
 /// Chunk position in chunk coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
