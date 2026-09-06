@@ -6,17 +6,18 @@
 //! Mojang ships for any resource pack or mod loader to read — never Java
 //! source, never committed (`docs/WORLD_PHYSICS_ASSETS.md`'s ASSETS policy).
 //!
-//! State properties select a variant, and orthogonal blockstate/model UV
-//! rotations are preserved for single-element full cubes. Multipart and
-//! non-cube models remain on the debug-color fallback.
+//! State properties select variants and multipart components. Parent models,
+//! cuboid elements, authored/default UVs, element rotations, cull faces,
+//! tints, and orthogonal block-state transforms are baked once per state.
 
+mod blockstate;
 mod model;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use mc_world::BlockState;
-use model::{FaceRef, FaceRefs, resolve_block};
+use model::{ModelRefs, resolve_block};
 
 pub use image::RgbaImage;
 
@@ -25,36 +26,26 @@ pub use image::RgbaImage;
 /// only ever read the first frame (see [`load_first_frame`]).
 const TILE: u32 = 16;
 
-/// A resolved block's texture, one entry per cube face.
-///
-/// All six are always populated (duplicated across faces when the model
-/// only distinguished "all" or "top/bottom vs. side"), so callers never
-/// need to special-case how a block model shaped its texture variables.
+/// One reusable, resource-model-authored block quad.
 #[derive(Debug, Clone, Copy)]
-pub struct Face {
-    /// `[u0, v0, u1, v1]` normalized atlas rectangle.
-    pub rect: [f32; 4],
-    /// Tile-local UV at each of the mesher face's four geometry corners.
+pub struct BakedQuad {
+    /// Block-local positions for the quad's four corners.
+    pub positions: [[f32; 3]; 4],
+    /// Normalized atlas UV at each corresponding corner.
     pub uv: [[f32; 2]; 4],
     /// Whether the resource model marks this face with a tint index.
     pub tinted: bool,
+    /// Neighbor offset that may hide this quad; `None` means never cull it.
+    pub cull: Option<(i32, i32, i32)>,
+    /// Model-authored directional shading multiplier.
+    pub brightness: f32,
 }
 
-/// A resolved block state's texture, one entry per cube face.
-#[derive(Debug, Clone, Copy)]
-pub struct BlockFaces {
-    /// `+Y` face.
-    pub up: Face,
-    /// `+Y`'s opposite.
-    pub down: Face,
-    /// `-Z`.
-    pub north: Face,
-    /// `+Z`.
-    pub south: Face,
-    /// `+X`.
-    pub east: Face,
-    /// `-X`.
-    pub west: Face,
+/// All baked quads selected for one numeric block state.
+#[derive(Debug, Clone)]
+pub struct BakedModel {
+    /// Quads from the selected variant or all matching multipart components.
+    pub quads: Vec<BakedQuad>,
 }
 
 /// Block name → resolved face textures.
@@ -64,15 +55,15 @@ pub struct BlockFaces {
 /// color instead, keeping one uniform vertex format for both paths).
 #[derive(Debug, Clone)]
 pub struct Atlas {
-    faces: HashMap<u32, BlockFaces>,
+    models: HashMap<u32, BakedModel>,
     white_uv: [f32; 4],
 }
 
 impl Atlas {
     /// This numeric block state's resolved per-face texture information.
     #[must_use]
-    pub fn lookup(&self, id: u32) -> Option<&BlockFaces> {
-        self.faces.get(&id)
+    pub fn lookup(&self, id: u32) -> Option<&BakedModel> {
+        self.models.get(&id)
     }
 
     /// A 1×1 solid-white texel's atlas rect, for tinting with a flat debug
@@ -92,7 +83,7 @@ impl Atlas {
         assets_root: &Path,
         states: impl IntoIterator<Item = (u32, &'a BlockState)>,
     ) -> (Self, RgbaImage) {
-        let refs: HashMap<u32, FaceRefs> = states
+        let refs: HashMap<u32, ModelRefs> = states
             .into_iter()
             .filter_map(|(id, state)| Some((id, resolve_block(assets_root, state)?)))
             .collect();
@@ -137,10 +128,10 @@ fn load_first_frame(path: &Path) -> Option<RgbaImage> {
 /// `FaceRefs` paths into real atlas UV rects. A block with any face texture
 /// that fails to load (missing file — resource files are optional/partial)
 /// is dropped entirely, same as an unresolved block.
-fn pack(assets_root: &Path, refs: &HashMap<u32, FaceRefs>) -> (Atlas, RgbaImage) {
+fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage) {
     let mut unique_paths: Vec<&str> = Vec::new();
-    for face_refs in refs.values() {
-        for path in face_refs.paths() {
+    for model_refs in refs.values() {
+        for path in model_refs.paths() {
             if !unique_paths.contains(&path) {
                 unique_paths.push(path);
             }
@@ -189,36 +180,39 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, FaceRefs>) -> (Atlas, RgbaImage)
         ]
     };
 
-    let mut faces = HashMap::with_capacity(refs.len());
-    for (id, face_refs) in refs {
-        let face = |face: &FaceRef| {
-            Some(Face {
-                rect: tile_index.get(face.path.as_str()).copied().map(uv_of)?,
-                uv: face.uv,
-                tinted: face.tinted,
+    let mut models = HashMap::with_capacity(refs.len());
+    for (id, model_refs) in refs {
+        let Some(quads) = model_refs
+            .0
+            .iter()
+            .map(|quad| {
+                let [u0, v0, u1, v1] = tile_index.get(quad.path.as_str()).copied().map(uv_of)?;
+                let uv = quad.uv.map(|[u, v]| {
+                    [(u / 16.0).mul_add(u1 - u0, u0), (v / 16.0).mul_add(v1 - v0, v0)]
+                });
+                Some(BakedQuad {
+                    positions: quad.positions,
+                    uv,
+                    tinted: quad.tinted,
+                    cull: quad.cull.map(model::Direction::offset),
+                    brightness: quad.brightness,
+                })
             })
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
         };
-        let Some(resolved) = (|| {
-            Some(BlockFaces {
-                up: face(&face_refs.0[0])?,
-                down: face(&face_refs.0[1])?,
-                north: face(&face_refs.0[2])?,
-                south: face(&face_refs.0[3])?,
-                east: face(&face_refs.0[4])?,
-                west: face(&face_refs.0[5])?,
-            })
-        })() else {
-            continue; // A referenced texture file was missing; skip this block.
-        };
-        faces.insert(*id, resolved);
+        models.insert(*id, BakedModel { quads });
     }
 
-    (Atlas { faces, white_uv: uv_of(white_index) }, atlas_image)
+    (Atlas { models, white_uv: uv_of(white_index) }, atlas_image)
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    use mc_world::BlockRegistry;
 
     use super::Atlas;
 
@@ -236,5 +230,39 @@ mod tests {
         assert_eq!(image.width(), image.height());
         let [u0, v0, u1, v1] = atlas.white_uv();
         assert!(u1 > u0 && v1 > v0);
+    }
+
+    /// Developer coverage probe for the pinned external cache. It is ignored
+    /// in CI because neither Mojang assets nor the derived state registry may
+    /// be committed.
+    #[test]
+    #[ignore = "requires the external 26.2 asset and block-state caches"]
+    fn cached_assets_bake_representative_model_families() {
+        let root = super::assets_root("26.2").expect("extract the pinned client assets first");
+        let registry = BlockRegistry::load_cached("26.2");
+        let states: Vec<_> =
+            (0..).map_while(|id| registry.state(id).map(|state| (id, state))).collect();
+        let (atlas, _) = Atlas::build(&root, states.iter().copied());
+        let resolved = states.iter().filter(|(id, _)| atlas.lookup(*id).is_some()).count();
+        eprintln!("baked {resolved}/{} cached block states", states.len());
+        let mut unresolved_names = states
+            .iter()
+            .filter(|(id, _)| atlas.lookup(*id).is_none())
+            .map(|(_, state)| state.name.as_ref())
+            .collect::<Vec<_>>();
+        unresolved_names.sort_unstable();
+        unresolved_names.dedup();
+        eprintln!("unresolved block families: {}", unresolved_names.join(", "));
+        for name in [
+            "minecraft:birch_log",
+            "minecraft:grass_block",
+            "minecraft:oak_stairs",
+            "minecraft:oak_fence",
+            "minecraft:short_grass",
+            "minecraft:torch",
+        ] {
+            let (id, _) = states.iter().find(|(_, state)| state.name.as_ref() == name).unwrap();
+            assert!(atlas.lookup(*id).is_some(), "failed to bake {name}");
+        }
     }
 }

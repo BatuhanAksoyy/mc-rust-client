@@ -39,5 +39,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sampled = textureSample(atlas_texture, atlas_sampler, in.uv);
+    if sampled.a < 0.1 {
+        discard;
+    }
     return vec4<f32>(sampled.rgb * in.tint, sampled.a);
 }

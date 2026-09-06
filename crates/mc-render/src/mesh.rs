@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use mc_world::{BlockRegistry, Chunk, ChunkPos};
 
-use crate::atlas::{Atlas, BlockFaces, Face};
+use crate::atlas::{Atlas, BakedQuad};
 
 /// One mesh vertex: chunk-local position, an atlas UV, and a pre-shaded tint.
 ///
@@ -51,20 +51,6 @@ const FACES: [(i32, i32, i32, f32); 6] = [
     (-1, 0, 0, 0.6),
 ];
 
-/// This face direction's atlas rect from `faces`, matching [`FACES`]'s
-/// `(dx, dy, dz, _)` convention (`north`/`south`/`east`/`west` follow
-/// Minecraft's own `-Z`/`+Z`/`+X`/`-X` convention).
-const fn face_texture(faces: &BlockFaces, face: (i32, i32, i32)) -> Face {
-    match face {
-        (0, 1, 0) => faces.up,
-        (0, -1, 0) => faces.down,
-        (0, 0, -1) => faces.north,
-        (0, 0, 1) => faces.south,
-        (1, 0, 0) => faces.east,
-        _ => faces.west,
-    }
-}
-
 /// Mesh every visible face of every non-air block in `chunk`. A face is
 /// visible when its neighbor is missing (chunk edge/top/bottom — there is no
 /// neighbor chunk to consult yet) or is air.
@@ -100,27 +86,30 @@ pub fn mesh_chunks(
                     if registry.is_air(id) {
                         continue;
                     }
-                    let resolved = atlas.lookup(id);
+                    let block = [offset_x + x as f32, y as f32, offset_z + z as f32];
+                    if let Some(model) = atlas.lookup(id) {
+                        for quad in &model.quads {
+                            let visible = quad.cull.is_none_or(|(dx, dy, dz)| {
+                                neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
+                                    .is_none_or(|neighbor| registry.is_air(neighbor))
+                            });
+                            if visible {
+                                push_baked_quad(&mut vertices, block, quad, registry.color(id));
+                            }
+                        }
+                        continue;
+                    }
                     for &(dx, dy, dz, brightness) in &FACES {
                         let visible = neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
                             .is_none_or(|neighbor| registry.is_air(neighbor));
                         if visible {
-                            let texture = resolved.map(|faces| face_texture(faces, (dx, dy, dz)));
-                            let tint = texture.map_or_else(
-                                || registry.color(id),
-                                |face| if face.tinted { registry.color(id) } else { [1.0; 3] },
-                            );
-                            let uv_rect =
-                                texture.map_or_else(|| atlas.white_uv(), |face| face.rect);
-                            let tile_uv =
-                                texture.map_or_else(|| uv_corners((dx, dy, dz)), |face| face.uv);
                             push_face(
                                 &mut vertices,
-                                [offset_x + x as f32, y as f32, offset_z + z as f32],
+                                block,
                                 (dx, dy, dz),
-                                uv_rect,
-                                tile_uv,
-                                tint,
+                                atlas.white_uv(),
+                                uv_corners((dx, dy, dz)),
+                                registry.color(id),
                                 brightness,
                             );
                         }
@@ -130,6 +119,22 @@ pub fn mesh_chunks(
         }
     }
     Mesh { vertices }
+}
+
+fn push_baked_quad(
+    vertices: &mut Vec<Vertex>,
+    block: [f32; 3],
+    quad: &BakedQuad,
+    block_tint: [f32; 3],
+) {
+    let tint = if quad.tinted { block_tint } else { [1.0; 3] };
+    let shaded = tint.map(|channel| channel * quad.brightness);
+    let positions = quad
+        .positions
+        .map(|position| [block[0] + position[0], block[1] + position[1], block[2] + position[2]]);
+    for &index in &[0, 1, 2, 0, 2, 3] {
+        vertices.push(Vertex { position: positions[index], uv: quad.uv[index], tint: shaded });
+    }
 }
 
 fn neighbor_block(

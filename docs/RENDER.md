@@ -49,14 +49,25 @@ Milestones:
    server teleport's absolute Y is relative to the first decoded section.
 3. **Partly done.** `atlas::Atlas` resolves real block textures from a locally extracted
    client jar (`WORLD_PHYSICS_ASSETS.md`'s ASSETS section): blockstate → model → texture,
-   selecting variants from cached block-state properties and following the
-   `parent`/`#slot` chain. Covers single-element full cubes (stone, dirt, ores,
-   state-oriented logs, tinted leaves, planks, sand, wool, concrete, ...); orthogonal
-   model rotations preserve both face assignment and UV orientation.
-   `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for anything else
-   (multipart blockstates — fences/walls/stairs — liquids, layered grass, and non-cube
-   models). No mipmaps/anisotropy yet (one nearest-filtered texture,
-   matching vanilla's own default sampling); lighting/fog still fixed per-face brightness.
+   following both `variants` (`atlas::blockstate`, incl. `OR`/`AND` multipart
+   `when` conditions) and `multipart` selection against cached block-state
+   properties, then the model `parent`/`#slot` chain. Bakes arbitrary
+   authored elements per state (`atlas::model`) — not just single-element full
+   cubes — so fences, walls, stairs, and other multi-element/non-cube models
+   mesh with their real per-element cuboids, cull faces, and tint indices;
+   orthogonal block-state `x`/`y` transforms and `uvlock` rotate both
+   positions and UVs together. Coverage checked against the full cached
+   26.2 block-state list (`atlas::tests::cached_assets_bake_representative_model_families`,
+   `#[ignore]`d — needs the local asset/state caches): only blocks Java
+   itself renders via a block-entity/BER (signs, banners, skulls, chests,
+   shulker boxes, heads, decorated pots, the copper golem statue), non-model
+   blocks (air variants, fluids, light, barrier, conduit, bubble column,
+   moving piston, end portal/gateway, structure void), and one hanging-sign
+   rotation's compound (non `angle`+`axis`) element rotation stay unresolved —
+   `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for those.
+   No mipmaps/anisotropy yet (one nearest-filtered texture, matching
+   vanilla's own default sampling); lighting/fog still fixed per-face
+   brightness.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.

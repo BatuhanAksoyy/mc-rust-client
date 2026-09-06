@@ -19,3 +19,4 @@ tokens.json
 azp-credentials.json
 # caches (fetch scripts use these OUTSIDE repo by default)
 .cache/
+.data/

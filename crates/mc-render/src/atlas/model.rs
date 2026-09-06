@@ -1,27 +1,32 @@
-//! Resource-pack blockstate/model resolution for orthogonal full cubes.
+//! Clean-room resource-pack blockstate/model resolution into reusable quads.
 
 use std::{collections::HashMap, path::Path};
 
 use mc_world::BlockState;
 
+use super::blockstate::{Application, select_applications};
+
 #[derive(Debug, Clone)]
-pub(super) struct FaceRef {
+pub(super) struct QuadRef {
+    pub positions: [[f32; 3]; 4],
     pub path: String,
     pub uv: [[f32; 2]; 4],
     pub tinted: bool,
+    pub cull: Option<Direction>,
+    pub brightness: f32,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct FaceRefs(pub [FaceRef; 6]);
+#[derive(Debug, Clone, Default)]
+pub(super) struct ModelRefs(pub Vec<QuadRef>);
 
-impl FaceRefs {
+impl ModelRefs {
     pub fn paths(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|face| face.path.as_str())
+        self.0.iter().map(|quad| quad.path.as_str())
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
+pub(super) enum Direction {
     Up,
     Down,
     North,
@@ -33,142 +38,288 @@ enum Direction {
 impl Direction {
     const ALL: [Self; 6] = [Self::Up, Self::Down, Self::North, Self::South, Self::East, Self::West];
 
-    const fn index(self) -> usize {
-        match self {
-            Self::Up => 0,
-            Self::Down => 1,
-            Self::North => 2,
-            Self::South => 3,
-            Self::East => 4,
-            Self::West => 5,
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            "north" => Some(Self::North),
+            "south" => Some(Self::South),
+            "east" => Some(Self::East),
+            "west" => Some(Self::West),
+            _ => None,
         }
     }
 
-    const fn name(self) -> &'static str {
+    pub const fn offset(self) -> (i32, i32, i32) {
         match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::North => "north",
-            Self::South => "south",
-            Self::East => "east",
-            Self::West => "west",
+            Self::Up => (0, 1, 0),
+            Self::Down => (0, -1, 0),
+            Self::North => (0, 0, -1),
+            Self::South => (0, 0, 1),
+            Self::East => (1, 0, 0),
+            Self::West => (-1, 0, 0),
+        }
+    }
+
+    const fn brightness(self) -> f32 {
+        match self {
+            Self::Up => 1.0,
+            Self::Down => 0.4,
+            Self::North | Self::South => 0.8,
+            Self::East | Self::West => 0.6,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct ModelFace {
-    texture: String,
-    rotation: u16,
-    tinted: bool,
-}
-
+#[derive(Default)]
 struct Model {
     textures: HashMap<String, String>,
-    faces: Option<[ModelFace; 6]>,
+    elements: Vec<serde_json::Value>,
 }
 
-struct Variant<'a> {
-    model: &'a str,
-    x: u16,
-    y: u16,
-}
-
-pub(super) fn resolve_block(assets_root: &Path, state: &BlockState) -> Option<FaceRefs> {
+pub(super) fn resolve_block(assets_root: &Path, state: &BlockState) -> Option<ModelRefs> {
     let short = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
     let blockstate = read_json(&assets_root.join("blockstates").join(format!("{short}.json")))?;
-    let variant = select_variant(&blockstate, state)?;
-    let model = resolve_model(assets_root, variant.model)?;
-    let model_faces = model.faces?;
-    let mut faces = Vec::with_capacity(6);
-    for (direction, face) in Direction::ALL.into_iter().zip(model_faces) {
-        let path = resolve_texture(&model.textures, &face.texture)?;
-        faces.push(FaceRef {
-            path,
-            uv: rotate_uv(default_uv(direction), face.rotation / 90),
-            tinted: face.tinted,
-        });
+    let applications = select_applications(&blockstate, state)?;
+    let mut output = Vec::new();
+    for application in applications {
+        let model = resolve_model(assets_root, &application.model, 0)?;
+        for element in &model.elements {
+            bake_element(element, &model.textures, &application, &mut output)?;
+        }
     }
-    let faces: [FaceRef; 6] = faces.try_into().ok()?;
-    rotate_faces(FaceRefs(faces), variant.x / 90, variant.y / 90)
-}
-
-fn select_variant<'a>(
-    blockstate: &'a serde_json::Value,
-    state: &BlockState,
-) -> Option<Variant<'a>> {
-    let variants = blockstate.get("variants")?.as_object()?;
-    let value =
-        variants.iter().find(|(key, _)| variant_matches(key, state)).map(|(_, value)| value)?;
-    let entry = value.as_array().and_then(|list| list.first()).unwrap_or(value);
-    let x = angle(entry.get("x"))?;
-    let y = angle(entry.get("y"))?;
-    Some(Variant { model: entry.get("model")?.as_str()?, x, y })
-}
-
-fn variant_matches(key: &str, state: &BlockState) -> bool {
-    key.is_empty()
-        || key.split(',').all(|condition| {
-            condition.split_once('=').is_some_and(|(name, expected)| {
-                state
-                    .properties
-                    .get(name)
-                    .is_some_and(|actual| expected.split('|').any(|value| value == actual.as_ref()))
-            })
-        })
+    (!output.is_empty()).then_some(ModelRefs(output))
 }
 
 fn angle(value: Option<&serde_json::Value>) -> Option<u16> {
-    let angle = value.map_or(Some(0), serde_json::Value::as_u64)?;
-    let angle = u16::try_from(angle).ok()?;
-    (angle < 360 && angle % 90 == 0).then_some(angle)
+    let value = value.map_or(Some(0), serde_json::Value::as_u64)?;
+    let value = u16::try_from(value).ok()?;
+    (value < 360 && value % 90 == 0).then_some(value)
 }
 
-fn resolve_model(assets_root: &Path, model_ref: &str) -> Option<Model> {
-    let short = model_ref.strip_prefix("minecraft:").unwrap_or(model_ref);
+fn resolve_model(assets_root: &Path, reference: &str, depth: usize) -> Option<Model> {
+    if depth >= 32 {
+        return None;
+    }
+    let short = reference.strip_prefix("minecraft:").unwrap_or(reference);
     let short = short.strip_prefix("block/").unwrap_or(short);
     let value = read_json(&assets_root.join("models/block").join(format!("{short}.json")))?;
     let mut model = match value.get("parent").and_then(serde_json::Value::as_str) {
-        Some(parent) => resolve_model(assets_root, parent)?,
-        None => Model { textures: HashMap::new(), faces: None },
+        Some(parent) => resolve_model(assets_root, parent, depth + 1)?,
+        None => Model::default(),
     };
     if let Some(textures) = value.get("textures").and_then(serde_json::Value::as_object) {
-        for (key, value) in textures {
-            model.textures.insert(key.clone(), value.as_str()?.to_owned());
+        for (name, value) in textures {
+            let texture = value.as_str().or_else(|| value.get("sprite")?.as_str())?;
+            model.textures.insert(name.clone(), texture.to_owned());
         }
     }
-    if value.get("elements").is_some() {
-        model.faces = parse_full_cube(&value);
+    if let Some(elements) = value.get("elements").and_then(serde_json::Value::as_array) {
+        model.elements.clone_from(elements);
     }
     Some(model)
 }
 
-fn parse_full_cube(model: &serde_json::Value) -> Option<[ModelFace; 6]> {
-    let elements = model.get("elements")?.as_array()?;
-    let [element] = elements.as_slice() else { return None };
-    if element.get("from")?.as_array()? != &[0, 0, 0]
-        || element.get("to")?.as_array()? != &[16, 16, 16]
-    {
-        return None;
-    }
+fn bake_element(
+    element: &serde_json::Value,
+    textures: &HashMap<String, String>,
+    application: &Application,
+    output: &mut Vec<QuadRef>,
+) -> Option<()> {
+    let from = vector(element.get("from")?)?;
+    let to = vector(element.get("to")?)?;
     let faces = element.get("faces")?.as_object()?;
-    let parsed: Vec<_> = Direction::ALL
-        .iter()
-        .map(|direction| {
-            let face = faces.get(direction.name())?;
-            Some(ModelFace {
-                texture: face.get("texture")?.as_str()?.to_owned(),
-                rotation: angle(face.get("rotation"))?,
-                tinted: face.get("tintindex").is_some(),
-            })
-        })
-        .collect::<Option<_>>()?;
-    parsed.try_into().ok()
+    let shade = element.get("shade").and_then(serde_json::Value::as_bool).unwrap_or(true);
+    for direction in Direction::ALL {
+        let Some(face) = faces.get(direction_name(direction)) else { continue };
+        let mut positions = face_positions(direction, from, to);
+        if let Some(rotation) = element.get("rotation") {
+            rotate_element(&mut positions, rotation)?;
+        }
+        let mut transformed_direction = direction;
+        for _ in 0..application.x / 90 {
+            positions = positions.map(|point| rotate_point_x(point, [0.5; 3], 90.0, false));
+            transformed_direction = rotate_direction_x(transformed_direction);
+        }
+        for _ in 0..application.y / 90 {
+            positions = positions.map(|point| rotate_point_y(point, [0.5; 3], 90.0, false));
+            transformed_direction = rotate_direction_y(transformed_direction);
+        }
+        let uv_rect =
+            face.get("uv").map_or_else(|| Some(default_uv(direction, from, to)), vector4)?;
+        let turns = angle(face.get("rotation"))? / 90;
+        let uv_direction = if application.uvlock { transformed_direction } else { direction };
+        let uv = rotate_uv(face_uv(uv_direction, uv_rect), turns);
+        let texture = resolve_texture(textures, face.get("texture")?.as_str()?)?;
+        let cull = face
+            .get("cullface")
+            .and_then(serde_json::Value::as_str)
+            .and_then(Direction::parse)
+            .map(|mut direction| {
+                for _ in 0..application.x / 90 {
+                    direction = rotate_direction_x(direction);
+                }
+                for _ in 0..application.y / 90 {
+                    direction = rotate_direction_y(direction);
+                }
+                direction
+            });
+        output.push(QuadRef {
+            positions,
+            path: texture,
+            uv,
+            tinted: face.get("tintindex").is_some(),
+            cull,
+            brightness: if shade { transformed_direction.brightness() } else { 1.0 },
+        });
+    }
+    Some(())
+}
+
+#[allow(clippy::cast_possible_truncation)]
+// Resource coordinates are tiny authored decimal values.
+fn vector(value: &serde_json::Value) -> Option<[f32; 3]> {
+    let values = value.as_array()?;
+    Some([
+        values.first()?.as_f64()? as f32 / 16.0,
+        values.get(1)?.as_f64()? as f32 / 16.0,
+        values.get(2)?.as_f64()? as f32 / 16.0,
+    ])
+}
+
+#[allow(clippy::cast_possible_truncation)]
+// Resource UV coordinates are conventionally in the 0..16 tile range.
+fn vector4(value: &serde_json::Value) -> Option<[f32; 4]> {
+    let values = value.as_array()?;
+    Some([
+        values.first()?.as_f64()? as f32,
+        values.get(1)?.as_f64()? as f32,
+        values.get(2)?.as_f64()? as f32,
+        values.get(3)?.as_f64()? as f32,
+    ])
+}
+
+const fn face_positions(direction: Direction, from: [f32; 3], to: [f32; 3]) -> [[f32; 3]; 4] {
+    let [x0, y0, z0] = from;
+    let [x1, y1, z1] = to;
+    match direction {
+        Direction::Up => [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
+        Direction::Down => [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        Direction::South => [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+        Direction::North => [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]],
+        Direction::East => [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+        Direction::West => [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
+    }
+}
+
+const fn default_uv(direction: Direction, from: [f32; 3], to: [f32; 3]) -> [f32; 4] {
+    let [x0, y0, z0] = [from[0] * 16.0, from[1] * 16.0, from[2] * 16.0];
+    let [x1, y1, z1] = [to[0] * 16.0, to[1] * 16.0, to[2] * 16.0];
+    match direction {
+        Direction::Down => [x0, 16.0 - z1, x1, 16.0 - z0],
+        Direction::Up => [x0, z0, x1, z1],
+        Direction::North => [16.0 - x1, 16.0 - y1, 16.0 - x0, 16.0 - y0],
+        Direction::South => [x0, 16.0 - y1, x1, 16.0 - y0],
+        Direction::West => [z0, 16.0 - y1, z1, 16.0 - y0],
+        Direction::East => [16.0 - z1, 16.0 - y1, 16.0 - z0, 16.0 - y0],
+    }
+}
+
+const fn face_uv(direction: Direction, [u0, v0, u1, v1]: [f32; 4]) -> [[f32; 2]; 4] {
+    let standard = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
+    match direction {
+        Direction::Up | Direction::Down | Direction::South => standard,
+        _ => [[u1, v1], [u0, v1], [u0, v0], [u1, v0]],
+    }
+}
+
+fn rotate_uv(mut uv: [[f32; 2]; 4], turns: u16) -> [[f32; 2]; 4] {
+    for _ in 0..turns {
+        uv.rotate_right(1);
+    }
+    uv
+}
+
+#[allow(clippy::cast_possible_truncation)]
+// The resource format restricts element angles to small fixed values.
+fn rotate_element(points: &mut [[f32; 3]; 4], value: &serde_json::Value) -> Option<()> {
+    let origin = vector(value.get("origin")?)?;
+    let angle = value.get("angle")?.as_f64()? as f32;
+    let rescale = value.get("rescale").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let axis = value.get("axis")?.as_str()?;
+    *points = points.map(|point| match axis {
+        "x" => rotate_point_x(point, origin, angle, rescale),
+        "y" => rotate_point_y(point, origin, angle, rescale),
+        "z" => rotate_point_z(point, origin, angle, rescale),
+        _ => point,
+    });
+    Some(())
+}
+
+#[allow(clippy::suboptimal_flops)] // Runs only during one-time model baking.
+fn rotate_point_x(mut point: [f32; 3], origin: [f32; 3], degrees: f32, rescale: bool) -> [f32; 3] {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (y, z) = (point[1] - origin[1], point[2] - origin[2]);
+    let scale = if rescale { 1.0 / cos.abs() } else { 1.0 };
+    point[1] = origin[1] + (y * cos - z * sin) * scale;
+    point[2] = origin[2] + (y * sin + z * cos) * scale;
+    point
+}
+
+#[allow(clippy::suboptimal_flops)] // Runs only during one-time model baking.
+fn rotate_point_y(mut point: [f32; 3], origin: [f32; 3], degrees: f32, rescale: bool) -> [f32; 3] {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (x, z) = (point[0] - origin[0], point[2] - origin[2]);
+    let scale = if rescale { 1.0 / cos.abs() } else { 1.0 };
+    point[0] = origin[0] + (x * cos - z * sin) * scale;
+    point[2] = origin[2] + (x * sin + z * cos) * scale;
+    point
+}
+
+#[allow(clippy::suboptimal_flops)] // Runs only during one-time model baking.
+fn rotate_point_z(mut point: [f32; 3], origin: [f32; 3], degrees: f32, rescale: bool) -> [f32; 3] {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (x, y) = (point[0] - origin[0], point[1] - origin[1]);
+    let scale = if rescale { 1.0 / cos.abs() } else { 1.0 };
+    point[0] = origin[0] + (x * cos - y * sin) * scale;
+    point[1] = origin[1] + (x * sin + y * cos) * scale;
+    point
+}
+
+const fn rotate_direction_x(direction: Direction) -> Direction {
+    match direction {
+        Direction::Up => Direction::South,
+        Direction::South => Direction::Down,
+        Direction::Down => Direction::North,
+        Direction::North => Direction::Up,
+        other => other,
+    }
+}
+
+const fn rotate_direction_y(direction: Direction) -> Direction {
+    match direction {
+        Direction::North => Direction::West,
+        Direction::West => Direction::South,
+        Direction::South => Direction::East,
+        Direction::East => Direction::North,
+        other => other,
+    }
+}
+
+const fn direction_name(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Up => "up",
+        Direction::Down => "down",
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::East => "east",
+        Direction::West => "west",
+    }
 }
 
 fn resolve_texture(textures: &HashMap<String, String>, texture: &str) -> Option<String> {
     let mut current = texture;
-    for _ in 0..8 {
+    for _ in 0..32 {
         match current.strip_prefix('#') {
             Some(slot) => current = textures.get(slot)?,
             None => return Some(current.to_owned()),
@@ -181,131 +332,16 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-const fn default_uv(direction: Direction) -> [[f32; 2]; 4] {
-    match direction {
-        Direction::Up | Direction::Down | Direction::South => {
-            [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
-        }
-        Direction::North | Direction::East | Direction::West => {
-            [[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]
-        }
-    }
-}
-
-fn rotate_uv(mut uv: [[f32; 2]; 4], turns: u16) -> [[f32; 2]; 4] {
-    for _ in 0..turns {
-        for point in &mut uv {
-            *point = [1.0 - point[1], point[0]];
-        }
-    }
-    uv
-}
-
-fn rotate_faces(mut faces: FaceRefs, x_turns: u16, y_turns: u16) -> Option<FaceRefs> {
-    for _ in 0..x_turns {
-        faces = rotate_once(&faces, rotate_x)?;
-    }
-    for _ in 0..y_turns {
-        faces = rotate_once(&faces, rotate_y)?;
-    }
-    Some(faces)
-}
-
-fn rotate_once(faces: &FaceRefs, rotate: fn([i8; 3]) -> [i8; 3]) -> Option<FaceRefs> {
-    let mut output: [Option<FaceRef>; 6] = std::array::from_fn(|_| None);
-    for direction in Direction::ALL {
-        let source = &faces.0[direction.index()];
-        let rotated_direction = direction_of(rotate(normal(direction)))?;
-        let target_corners = geometry_corners(rotated_direction);
-        let mut uv = [[0.0; 2]; 4];
-        for (corner, source_uv) in geometry_corners(direction).into_iter().zip(source.uv) {
-            let rotated = rotate(corner);
-            let index = target_corners.iter().position(|candidate| *candidate == rotated)?;
-            uv[index] = source_uv;
-        }
-        output[rotated_direction.index()] =
-            Some(FaceRef { path: source.path.clone(), uv, tinted: source.tinted });
-    }
-    Some(FaceRefs(output.map(|face| face.expect("cube rotation preserves all six faces"))))
-}
-
-const fn normal(direction: Direction) -> [i8; 3] {
-    match direction {
-        Direction::Up => [0, 1, 0],
-        Direction::Down => [0, -1, 0],
-        Direction::North => [0, 0, -1],
-        Direction::South => [0, 0, 1],
-        Direction::East => [1, 0, 0],
-        Direction::West => [-1, 0, 0],
-    }
-}
-
-const fn direction_of(normal: [i8; 3]) -> Option<Direction> {
-    match normal {
-        [0, 1, 0] => Some(Direction::Up),
-        [0, -1, 0] => Some(Direction::Down),
-        [0, 0, -1] => Some(Direction::North),
-        [0, 0, 1] => Some(Direction::South),
-        [1, 0, 0] => Some(Direction::East),
-        [-1, 0, 0] => Some(Direction::West),
-        _ => None,
-    }
-}
-
-const fn rotate_x([x, y, z]: [i8; 3]) -> [i8; 3] {
-    [x, -z, y]
-}
-
-const fn rotate_y([x, y, z]: [i8; 3]) -> [i8; 3] {
-    [-z, y, x]
-}
-
-const fn geometry_corners(direction: Direction) -> [[i8; 3]; 4] {
-    match direction {
-        Direction::Up => [[-1, 1, -1], [-1, 1, 1], [1, 1, 1], [1, 1, -1]],
-        Direction::Down => [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]],
-        Direction::South => [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
-        Direction::North => [[-1, -1, -1], [-1, 1, -1], [1, 1, -1], [1, -1, -1]],
-        Direction::East => [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]],
-        Direction::West => [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]],
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use mc_world::BlockState;
-
-    use super::{Direction, FaceRef, FaceRefs, rotate_faces, select_variant};
+    use super::{Direction, default_uv};
 
     #[test]
-    fn state_properties_select_the_matching_variant_and_rotation() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"variants":{"axis=x":{"model":"block/log_horizontal","x":90,"y":90},"axis=y":{"model":"block/log"}}}"#,
-        )
-        .unwrap();
-        let state = BlockState {
-            name: "minecraft:birch_log".into(),
-            properties: BTreeMap::from([("axis".into(), "x".into())]),
-        };
-        let variant = select_variant(&json, &state).unwrap();
-        assert_eq!(variant.model, "block/log_horizontal");
-        assert_eq!((variant.x, variant.y), (90, 90));
-    }
-
-    #[test]
-    fn orthogonal_rotation_moves_end_textures_and_their_uvs() {
-        let side = || FaceRef {
-            path: "side".to_owned(),
-            uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
-            tinted: false,
-        };
-        let end = || FaceRef { path: "end".to_owned(), ..side() };
-        let faces = FaceRefs([end(), end(), side(), side(), side(), side()]);
-        let rotated = rotate_faces(faces, 1, 1).unwrap();
-        assert_eq!(rotated.0[Direction::East.index()].path, "end");
-        assert_eq!(rotated.0[Direction::West.index()].path, "end");
-        assert_ne!(rotated.0[Direction::Up.index()].uv, side().uv);
+    #[allow(clippy::float_cmp)] // Values are exactly representable binary fractions.
+    fn default_uv_uses_element_bounds() {
+        assert_eq!(
+            default_uv(Direction::South, [0.25, 0.5, 0.0], [0.75, 1.0, 1.0]),
+            [4.0, 0.0, 12.0, 8.0]
+        );
     }
 }
