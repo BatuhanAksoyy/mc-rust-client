@@ -258,11 +258,12 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, Vec<RgbaI
     let uv_of = |index: usize| -> [f32; 4] {
         let index = u32::try_from(index).unwrap_or(u32::MAX);
         let (col, row) = (index % columns, index / columns);
+        let inset = 0.5_f32;
         [
-            (col * TILE) as f32 / atlas_w as f32,
-            (row * TILE) as f32 / atlas_h as f32,
-            ((col + 1) * TILE) as f32 / atlas_w as f32,
-            ((row + 1) * TILE) as f32 / atlas_h as f32,
+            (col * TILE) as f32 / atlas_w as f32 + inset / atlas_w as f32,
+            (row * TILE) as f32 / atlas_h as f32 + inset / atlas_h as f32,
+            ((col + 1) * TILE) as f32 / atlas_w as f32 - inset / atlas_w as f32,
+            ((row + 1) * TILE) as f32 / atlas_h as f32 - inset / atlas_h as f32,
         ]
     };
 

@@ -63,14 +63,12 @@ pub struct InputState {
 ///
 /// Implementations own physics, camera, and any fixed-tick scheduling; this
 /// module only ever supplies input and elapsed wall-clock time, never reads
-/// game state back out except through its camera methods.
+/// game state back out except through [`Self::view_projection`].
 pub trait Game {
     /// Advance game state by `elapsed` wall-clock time, given this frame's input.
     fn update(&mut self, elapsed: std::time::Duration, input: &InputState);
     /// The view-projection matrix to render this frame.
     fn view_projection(&self, aspect_ratio: f32) -> glam::Mat4;
-    /// Interpolated camera position used to sort translucent geometry.
-    fn camera_position(&self) -> glam::Vec3;
 }
 
 /// Open a window titled `title`, capture the mouse for FPS-style look, and
@@ -231,7 +229,7 @@ impl<G: Game> App<G> {
         };
         self.game.update(elapsed, &input);
         let view_proj = self.game.view_projection(renderer.aspect_ratio());
-        renderer.render(view_proj, self.game.camera_position());
+        renderer.render(view_proj);
         if let Some(window) = &self.window {
             window.request_redraw();
         }
