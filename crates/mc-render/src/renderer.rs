@@ -26,10 +26,9 @@ struct Uniforms {
 /// Two pipelines share one shader/bind group, differing only in depth
 /// writes: `pipeline` (opaque + cutout — every real or debug-color block,
 /// lava included) writes depth normally, while `translucent_pipeline`
-/// (water only, `Mesh::translucent`) uses a stable depth test and also writes
-/// depth. This gives overlapping water surfaces a deterministic nearest-
-/// surface winner instead of allowing camera motion to reorder coplanar
-/// alpha blends frame to frame.
+/// (water only, `Mesh::translucent`) tests depth without writing it. Its
+/// quads are sorted back-to-front from the interpolated camera whenever the
+/// camera moves, preserving correct alpha accumulation with a stable order.
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -44,6 +43,8 @@ pub struct Renderer {
     vertex_count: u32,
     translucent_vertex_buffer: wgpu::Buffer,
     translucent_vertex_count: u32,
+    translucent_vertices: Vec<Vertex>,
+    translucent_sort_position: Option<glam::Vec3>,
 }
 
 /// Construction or GPU-adapter failure; there is no fallback renderer.
@@ -102,7 +103,7 @@ impl Renderer {
             &device,
             config.format,
             &bind_group_layout,
-            true,
+            false,
             "chunk-translucent-pipeline",
         );
 
@@ -130,6 +131,8 @@ impl Renderer {
             vertex_count: 0,
             translucent_vertex_buffer,
             translucent_vertex_count: 0,
+            translucent_vertices: Vec::new(),
+            translucent_sort_position: None,
         })
     }
 
@@ -156,15 +159,8 @@ impl Renderer {
         );
         self.vertex_buffer = buffer;
         self.vertex_count = count;
-        let (buffer, count) = Self::upload(
-            &self.device,
-            &self.queue,
-            &self.translucent_vertex_buffer,
-            "chunk-translucent-vertices",
-            &mesh.translucent,
-        );
-        self.translucent_vertex_buffer = buffer;
-        self.translucent_vertex_count = count;
+        self.translucent_vertices.clone_from(&mesh.translucent);
+        self.translucent_sort_position = None;
     }
 
     /// Write `vertices` into `buffer` in place if it still fits, or allocate
@@ -205,7 +201,8 @@ impl Renderer {
     /// race, an occluded/minimized window, one dropped frame) is swallowed
     /// here — none of them are this client's problem to recover from at
     /// this milestone (`docs/RENDER.md`); a future frame just tries again.
-    pub fn render(&mut self, view_proj: glam::Mat4) {
+    pub fn render(&mut self, view_proj: glam::Mat4, camera_position: glam::Vec3) {
+        self.sort_translucent(camera_position);
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -264,8 +261,8 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..self.vertex_count, 0..1);
-            // Same pass, same depth buffer, drawn after: water is depth-tested
-            // and depth-written to make overlapping surfaces stable.
+            // Same pass and depth buffer, drawn after opaque geometry. Water
+            // is already back-to-front and tests depth without writing it.
             pass.set_pipeline(&self.translucent_pipeline);
             pass.set_vertex_buffer(0, self.translucent_vertex_buffer.slice(..));
             pass.draw(0..self.translucent_vertex_count, 0..1);
@@ -273,6 +270,43 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(surface_texture);
     }
+
+    fn sort_translucent(&mut self, camera_position: glam::Vec3) {
+        const RESORT_DISTANCE_SQUARED: f32 = 1.0 / 256.0;
+        if self.translucent_sort_position.is_some_and(|previous| {
+            previous.distance_squared(camera_position) < RESORT_DISTANCE_SQUARED
+        }) {
+            return;
+        }
+        let sorted = sorted_translucent(&self.translucent_vertices, camera_position);
+        let (buffer, count) = Self::upload(
+            &self.device,
+            &self.queue,
+            &self.translucent_vertex_buffer,
+            "chunk-translucent-vertices",
+            &sorted,
+        );
+        self.translucent_vertex_buffer = buffer;
+        self.translucent_vertex_count = count;
+        self.translucent_sort_position = Some(camera_position);
+    }
+}
+
+/// Return six-vertex quads ordered farthest-to-nearest for alpha blending.
+/// Fluid meshing always emits one independent quad as two triangles.
+fn sorted_translucent(vertices: &[Vertex], camera: glam::Vec3) -> Vec<Vertex> {
+    let (quads, remainder) = vertices.as_chunks::<6>();
+    debug_assert!(remainder.is_empty());
+    let mut quads = quads.to_vec();
+    let distance = |quad: &[Vertex; 6]| {
+        let center = quad
+            .iter()
+            .fold(glam::Vec3::ZERO, |sum, vertex| sum + glam::Vec3::from_array(vertex.position))
+            / 6.0;
+        center.distance_squared(camera)
+    };
+    quads.sort_by(|left, right| distance(right).total_cmp(&distance(left)));
+    quads.into_iter().flatten().collect()
 }
 
 /// Upload `levels` (a full mip chain, coarsest last — `atlas::Atlas::build`)
@@ -395,8 +429,8 @@ fn create_bind_group(
 /// Build one render pipeline against the shared bind group layout.
 /// `depth_write_enabled` is the only thing that ever differs between the
 /// opaque/cutout pipeline and the translucent one (see `Renderer`'s doc
-/// comment) — same shader and blend state; the translucent pass writes depth
-/// to prevent temporal water z-fighting.
+/// comment) — same shader and blend state; only translucent depth writes are
+/// disabled because those quads are explicitly sorted back-to-front.
 fn create_pipeline(
     device: &wgpu::Device,
     surface_format: wgpu::TextureFormat,
@@ -476,4 +510,24 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Vertex, sorted_translucent};
+
+    fn quad(z: f32) -> [Vertex; 6] {
+        [Vertex { position: [0.0, 0.0, z], uv: [0.0; 2], tint: [1.0; 3] }; 6]
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // Fixture coordinates are copied, not calculated.
+    fn translucent_quads_are_sorted_back_to_front() {
+        let vertices: Vec<_> = [quad(2.0), quad(8.0), quad(4.0)].into_iter().flatten().collect();
+        let sorted = sorted_translucent(&vertices, glam::Vec3::ZERO);
+        assert_eq!(
+            [sorted[0].position[2], sorted[6].position[2], sorted[12].position[2]],
+            [8.0, 4.0, 2.0]
+        );
+    }
 }

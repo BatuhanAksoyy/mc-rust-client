@@ -93,9 +93,7 @@ impl Game for RenderGame {
     }
 
     fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        #[allow(clippy::cast_possible_truncation)] // `alpha` is always in [0, 1).
-        let alpha = self.alpha as f32;
-        let eye = self.previous.eye().lerp(self.current.eye(), alpha);
+        let eye = self.camera_position();
         let forward = forward_vector(self.yaw, self.pitch);
         let view = glam::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
         // wgpu's NDC Z range is [0, 1] regardless of backend (Metal/Vulkan/DX12/GL
@@ -117,6 +115,12 @@ impl Game for RenderGame {
             0.05,
         );
         projection * view
+    }
+
+    fn camera_position(&self) -> Vec3 {
+        #[allow(clippy::cast_possible_truncation)] // `alpha` is always in [0, 1).
+        let alpha = self.alpha as f32;
+        self.previous.eye().lerp(self.current.eye(), alpha)
     }
 }
 

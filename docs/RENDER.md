@@ -134,10 +134,12 @@ Milestones:
    `water_still` itself, ~0.7) draws through its own pass (`Mesh::translucent`,
    `Renderer`'s `translucent_pipeline`): same shader and bind group as
    everything else, drawn after the opaque/cutout pass in the same render
-   pass. The translucent pipeline writes depth too: this gives overlapping
-   water surfaces a deterministic nearest-surface winner instead of allowing
-   camera motion to reorder coplanar alpha blends frame to frame. Lava draws
-   through the ordinary opaque/cutout pass instead — its
+   pass. Water quads are sorted back-to-front by distance from the interpolated
+   camera whenever it moves materially, then drawn without depth writes. This
+   preserves the contribution of water layers behind the nearest surface while
+   keeping their blend order stable; forcing depth writes made water visibly
+   too clear by discarding those layers. Lava draws through the ordinary
+   opaque/cutout pass instead — its
    texture has no real alpha variation, so it needs no special treatment.
    The camera projection (`play.rs`'s `view_projection`) is reversed-Z
    (`perspective_infinite_reverse`, matching `Renderer`'s depth clear value
