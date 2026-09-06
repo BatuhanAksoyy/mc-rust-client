@@ -63,4 +63,28 @@ impl Chunk {
         let index = usize::try_from((local_y * 16 + z) * 16 + x).ok()?;
         section.get(index).copied()
     }
+
+    /// Replace the block-state ID at chunk-local `(x, y, z)`.
+    ///
+    /// Returns `false` without changing the chunk when the coordinate is out
+    /// of its decoded bounds. The client-side fluid fixture uses this seam;
+    /// authoritative gameplay updates will eventually apply through the same
+    /// dense storage after decoding server block-change packets.
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, id: u32) -> bool {
+        if !(0..16).contains(&x) || !(0..16).contains(&z) || y < 0 {
+            return false;
+        }
+        let Some(section) =
+            usize::try_from(y / 16).ok().and_then(|section| self.sections.get_mut(section))
+        else {
+            return false;
+        };
+        let local_y = y % 16;
+        let Ok(index) = usize::try_from((local_y * 16 + z) * 16 + x) else {
+            return false;
+        };
+        let Some(block) = section.get_mut(index) else { return false };
+        *block = id;
+        true
+    }
 }

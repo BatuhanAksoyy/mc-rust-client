@@ -93,3 +93,27 @@ fn block_indexing_matches_x_fastest_then_z_then_y() {
     assert_eq!(chunk.block_at(0, 0, 1), Some(10));
     assert_eq!(chunk.block_at(1, 0, 1), Some(0));
 }
+
+#[test]
+fn block_mutation_uses_the_same_coordinates_and_rejects_out_of_bounds() {
+    let level = LevelChunk {
+        x: 0,
+        z: 0,
+        heightmaps: Vec::new(),
+        sections: vec![ChunkSection {
+            block_count: 0,
+            fluid_count: 0,
+            block_states: single_valued(0),
+            biomes: single_valued(0),
+        }],
+        block_entities: Vec::new(),
+        light: no_light(),
+    };
+    let mut chunk = Chunk::from_level(&level);
+    assert!(chunk.set_block(3, 7, 11, 42));
+    assert_eq!(chunk.block_at(3, 7, 11), Some(42));
+    assert!(!chunk.set_block(16, 7, 11, 9));
+    assert!(!chunk.set_block(3, -1, 11, 9));
+    assert!(!chunk.set_block(3, 16, 11, 9));
+    assert_eq!(chunk.block_at(3, 7, 11), Some(42));
+}
