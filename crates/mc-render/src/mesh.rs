@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use mc_world::{BlockRegistry, Chunk, ChunkPos};
 
-use crate::atlas::{Atlas, BlockFaces};
+use crate::atlas::{Atlas, BlockFaces, Face};
 
 /// One mesh vertex: chunk-local position, an atlas UV, and a pre-shaded tint.
 ///
@@ -54,7 +54,7 @@ const FACES: [(i32, i32, i32, f32); 6] = [
 /// This face direction's atlas rect from `faces`, matching [`FACES`]'s
 /// `(dx, dy, dz, _)` convention (`north`/`south`/`east`/`west` follow
 /// Minecraft's own `-Z`/`+Z`/`+X`/`-X` convention).
-const fn face_uv(faces: &BlockFaces, face: (i32, i32, i32)) -> [f32; 4] {
+const fn face_texture(faces: &BlockFaces, face: (i32, i32, i32)) -> Face {
     match face {
         (0, 1, 0) => faces.up,
         (0, -1, 0) => faces.down,
@@ -100,21 +100,26 @@ pub fn mesh_chunks(
                     if registry.is_air(id) {
                         continue;
                     }
-                    let resolved = registry.name(id).and_then(|name| atlas.lookup(name));
-                    let tint = resolved.map_or_else(|| registry.color(id), |_| [1.0, 1.0, 1.0]);
+                    let resolved = atlas.lookup(id);
                     for &(dx, dy, dz, brightness) in &FACES {
                         let visible = neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
                             .is_none_or(|neighbor| registry.is_air(neighbor));
                         if visible {
-                            let uv = resolved.map_or_else(
-                                || atlas.white_uv(),
-                                |faces| face_uv(faces, (dx, dy, dz)),
+                            let texture = resolved.map(|faces| face_texture(faces, (dx, dy, dz)));
+                            let tint = texture.map_or_else(
+                                || registry.color(id),
+                                |face| if face.tinted { registry.color(id) } else { [1.0; 3] },
                             );
+                            let uv_rect =
+                                texture.map_or_else(|| atlas.white_uv(), |face| face.rect);
+                            let tile_uv =
+                                texture.map_or_else(|| uv_corners((dx, dy, dz)), |face| face.uv);
                             push_face(
                                 &mut vertices,
                                 [offset_x + x as f32, y as f32, offset_z + z as f32],
                                 (dx, dy, dz),
-                                uv,
+                                uv_rect,
+                                tile_uv,
                                 tint,
                                 brightness,
                             );
@@ -171,6 +176,7 @@ fn push_face(
     block: [f32; 3],
     face: (i32, i32, i32),
     uv_rect: [f32; 4],
+    tile_uv: [[f32; 2]; 4],
     tint: [f32; 3],
     brightness: f32,
 ) {
@@ -191,7 +197,7 @@ fn push_face(
     let [u0, v0, u1, v1] = uv_rect;
     let positions = corners
         .map(|[ox, oy, oz]| [block[0] + ox as f32, block[1] + oy as f32, block[2] + oz as f32]);
-    let uvs = uv_corners(face).map(|[u, v]| [u.mul_add(u1 - u0, u0), v.mul_add(v1 - v0, v0)]);
+    let uvs = tile_uv.map(|[u, v]| [u.mul_add(u1 - u0, u0), v.mul_add(v1 - v0, v0)]);
     for &index in &[0, 1, 2, 0, 2, 3] {
         vertices.push(Vertex { position: positions[index], uv: uvs[index], tint: shaded });
     }

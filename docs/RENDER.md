@@ -47,12 +47,13 @@ Milestones:
    server teleport's absolute Y is relative to the first decoded section.
 3. **Partly done.** `atlas::Atlas` resolves real block textures from a locally extracted
    client jar (`WORLD_PHYSICS_ASSETS.md`'s ASSETS section): blockstate → model → texture,
-   following the `parent`/`#slot` chain generically down to one of vanilla's cube base
-   models (`cube_all`, `cube_column`(`_horizontal`), `cube_bottom_top`, `cube`). Covers
-   plain full-cube blocks (stone, dirt, ores, logs, planks, sand, wool, concrete, ...);
+   selecting variants from cached block-state properties and following the
+   `parent`/`#slot` chain. Covers single-element full cubes (stone, dirt, ores,
+   state-oriented logs, tinted leaves, planks, sand, wool, concrete, ...); orthogonal
+   model rotations preserve both face assignment and UV orientation.
    `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for anything else
-   (multipart blockstates — fences/walls/stairs — liquids, and tinted/non-cube models
-   like leaves and grass_block). No mipmaps/anisotropy yet (one nearest-filtered texture,
+   (multipart blockstates — fences/walls/stairs — liquids, layered grass, and non-cube
+   models). No mipmaps/anisotropy yet (one nearest-filtered texture,
    matching vanilla's own default sampling); lighting/fog still fixed per-face brightness.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).

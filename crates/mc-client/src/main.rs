@@ -241,16 +241,14 @@ fn build_atlas(
     chunks: &[mc_world::Chunk],
     registry: &mc_world::BlockRegistry,
 ) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage) {
-    let mut names = std::collections::HashSet::new();
+    let mut state_ids = std::collections::HashSet::new();
     for chunk in chunks {
         if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
             for y in 0..height {
                 for z in 0..16 {
                     for x in 0..16 {
-                        if let Some(id) = chunk.block_at(x, y, z)
-                            && let Some(name) = registry.name(id)
-                        {
-                            names.insert(name);
+                        if let Some(id) = chunk.block_at(x, y, z) {
+                            state_ids.insert(id);
                         }
                     }
                 }
@@ -264,7 +262,10 @@ fn build_atlas(
         );
         return mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
     };
-    mc_render::atlas::Atlas::build(&assets_root, names)
+    mc_render::atlas::Atlas::build(
+        &assets_root,
+        state_ids.into_iter().filter_map(|id| Some((id, registry.state(id)?))),
+    )
 }
 
 /// Prefer the chunk containing the server-confirmed spawn, then its declared

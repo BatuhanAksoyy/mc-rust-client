@@ -5,7 +5,7 @@ mod chunk;
 mod registry;
 
 pub use chunk::Chunk;
-pub use registry::BlockRegistry;
+pub use registry::{BlockRegistry, BlockState};
 
 /// Chunk position in chunk coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -7,25 +7,38 @@
 //! pinned server jar's own `--reports` flag — never bundled or committed,
 //! and never required: an absent cache degrades to hashed placeholder colors.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+
+/// One global block state, including the properties that select its resource-pack variant.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BlockState {
+    /// Namespaced block identifier.
+    pub name: Box<str>,
+    /// State properties such as `axis=x` or `facing=north`.
+    #[serde(default)]
+    pub properties: BTreeMap<Box<str>, Box<str>>,
+}
 
 /// Numeric block-state ID → name, loaded from an optional cache.
 #[derive(Debug, Clone)]
 pub struct BlockRegistry {
     /// Indexed by state ID; empty when no cache was found or it failed to parse.
-    names: Arc<[Box<str>]>,
+    states: Arc<[BlockState]>,
 }
 
 #[derive(serde::Deserialize)]
 struct CachedReport {
+    #[serde(default)]
     names: Vec<String>,
+    #[serde(default)]
+    states: Vec<BlockState>,
 }
 
 impl BlockRegistry {
     /// An empty registry: every ID reports no name and a hashed color.
     #[must_use]
     pub fn empty() -> Self {
-        Self { names: Arc::from(Vec::new().into_boxed_slice()) }
+        Self { states: Arc::from(Vec::new().into_boxed_slice()) }
     }
 
     /// Build a registry directly from an ID-indexed name list (index = state
@@ -33,7 +46,12 @@ impl BlockRegistry {
     /// and for a registry sourced some other way in the future.
     #[must_use]
     pub fn from_names(names: Vec<String>) -> Self {
-        Self { names: names.into_iter().map(String::into_boxed_str).collect() }
+        Self {
+            states: names
+                .into_iter()
+                .map(|name| BlockState { name: name.into_boxed_str(), properties: BTreeMap::new() })
+                .collect(),
+        }
     }
 
     /// Load `<cache>/mc-rust-client/<version>/block-states.json`
@@ -55,13 +73,23 @@ impl BlockRegistry {
     /// directory or filesystem — the seam integration tests exercise.
     fn from_report_json(text: &str) -> Option<Self> {
         let report: CachedReport = serde_json::from_str(text).ok()?;
-        Some(Self::from_names(report.names))
+        if report.states.is_empty() {
+            (!report.names.is_empty()).then(|| Self::from_names(report.names))
+        } else {
+            Some(Self { states: report.states.into() })
+        }
+    }
+
+    /// This numeric ID's full block state, if present in the local registry.
+    #[must_use]
+    pub fn state(&self, id: u32) -> Option<&BlockState> {
+        self.states.get(id as usize)
     }
 
     /// This block-state ID's namespaced name, if the registry has it.
     #[must_use]
     pub fn name(&self, id: u32) -> Option<&str> {
-        self.names.get(id as usize).map(AsRef::as_ref)
+        self.state(id).map(|state| state.name.as_ref())
     }
 
     /// Whether `id` is one of the three air variants. Unknown IDs (registry
@@ -105,6 +133,9 @@ fn hashed_color(id: u32) -> [f32; 3] {
 
 #[allow(clippy::match_same_arms)]
 fn named_color(name: &str) -> Option<[f32; 3]> {
+    if name.ends_with("_leaves") {
+        return Some([0.20, 0.45, 0.13]);
+    }
     Some(match name {
         "minecraft:grass_block" => [0.29, 0.62, 0.27],
         "minecraft:dirt"
@@ -135,7 +166,6 @@ fn named_color(name: &str) -> Option<[f32; 3]> {
         "minecraft:water" => [0.16, 0.35, 0.86],
         "minecraft:lava" => [0.86, 0.35, 0.05],
         "minecraft:oak_log" | "minecraft:oak_wood" | "minecraft:oak_planks" => [0.45, 0.34, 0.19],
-        "minecraft:oak_leaves" | "minecraft:azalea_leaves" => [0.20, 0.45, 0.13],
         "minecraft:snow" | "minecraft:snow_block" | "minecraft:powder_snow" => [0.95, 0.95, 0.97],
         "minecraft:ice" | "minecraft:packed_ice" | "minecraft:blue_ice" => [0.68, 0.80, 0.93],
         "minecraft:granite" | "minecraft:polished_granite" => [0.60, 0.39, 0.34],
@@ -188,5 +218,14 @@ mod tests {
         assert!(!registry.is_air(1));
         assert!(!registry.is_air(2)); // Unknown, not air.
         assert_eq!(registry.color(1).map(f32::to_bits), [0.5, 0.5, 0.5].map(f32::to_bits)); // Stone.
+    }
+
+    #[test]
+    fn state_report_retains_variant_properties() {
+        let json = r#"{"protocol":776,"version":"26.2","states":[{"name":"minecraft:birch_log","properties":{"axis":"x"}}]}"#;
+        let registry = BlockRegistry::from_report_json(json).unwrap();
+        let state = registry.state(0).unwrap();
+        assert_eq!(state.name.as_ref(), "minecraft:birch_log");
+        assert_eq!(state.properties.get("axis").map(AsRef::as_ref), Some("x"));
     }
 }
