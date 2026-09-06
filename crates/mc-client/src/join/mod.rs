@@ -14,7 +14,7 @@ use tokio::time::timeout;
 /// Client policy bound on chunks decoded before spawn; a real batch is
 /// bounded by view distance, not this. Guards against many tiny chunks
 /// amplifying a bounded byte budget into a large `Vec<LevelChunk>`.
-const MAX_CHUNKS_PER_JOIN: usize = 256;
+const MAX_CHUNKS_PER_JOIN: usize = 512;
 
 /// Terminal join failure; cancellation and errors close the connection.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +72,7 @@ pub struct Joined {
     /// chunks (from movement or a changed loading area) are later work.
     pub chunks: Vec<chunk::LevelChunk>,
     connection: Connection,
+    batch_started: Option<Instant>,
 }
 
 impl Joined {
@@ -79,6 +80,88 @@ impl Joined {
     /// Callers own timing/packet interpretation and must drop `self` on errors.
     pub async fn next_packet(&mut self) -> Result<RawPacket, TransportError> {
         self.connection.read().await
+    }
+
+    /// Drain post-spawn chunk batches until the requested square view area is
+    /// loaded or `deadline` elapses. A deadline returns the chunks received so
+    /// far; malformed packets and disconnects remain errors.
+    pub async fn load_initial_chunks(
+        &mut self,
+        render_distance: u8,
+        deadline: Duration,
+    ) -> Result<(), JoinError> {
+        if !(2..=8).contains(&render_distance) {
+            return Err(JoinError::InvalidState("render distance outside 2..=8"));
+        }
+        let diameter = usize::from(render_distance) * 2 + 1;
+        let target = diameter * diameter;
+        let started = Instant::now();
+        loop {
+            if self.chunks.len() >= target && self.batch_started.is_none() {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            let packet = match timeout(remaining, self.connection.read()).await {
+                Ok(result) => result?,
+                Err(_) => return Ok(()),
+            };
+            match packet.id {
+                chunk::BATCH_START_ID => self.batch_started = Some(Instant::now()),
+                chunk::LEVEL_CHUNK_WITH_LIGHT_ID => {
+                    let decoded = chunk::decode(&packet)?;
+                    if let Some(existing) = self
+                        .chunks
+                        .iter_mut()
+                        .find(|loaded| loaded.x == decoded.x && loaded.z == decoded.z)
+                    {
+                        *existing = decoded;
+                    } else if self.chunks.len() == MAX_CHUNKS_PER_JOIN {
+                        return Err(JoinError::Limit);
+                    } else {
+                        self.chunks.push(decoded);
+                    }
+                }
+                chunk::BATCH_FINISHED_ID => {
+                    let Some(batch_started) = self.batch_started.take() else {
+                        return Err(JoinError::InvalidState(
+                            "chunk batch finished without a start",
+                        ));
+                    };
+                    let batch_size = chunk::decode_batch_finished(&packet)?;
+                    let reply =
+                        chunk::batch_received(desired_chunks_per_tick(batch_started, batch_size));
+                    self.connection.send(chunk::BATCH_RECEIVED_ID, &reply).await?;
+                    if self.chunks.len() >= target {
+                        return Ok(());
+                    }
+                }
+                _ => self.handle_post_spawn(packet).await?,
+            }
+        }
+    }
+
+    async fn handle_post_spawn(&mut self, packet: RawPacket) -> Result<(), JoinError> {
+        match play::decode(&packet)? {
+            Some(play::Packet::Disconnect) => Err(JoinError::Disconnected("play")),
+            Some(play::Packet::KeepAlive(id)) => {
+                self.connection.send(play::SERVERBOUND_KEEP_ALIVE_ID, &id.to_be_bytes()).await?;
+                Ok(())
+            }
+            Some(play::Packet::SetCenterChunk { x, z }) => {
+                self.center_chunk = Some((x, z));
+                Ok(())
+            }
+            Some(play::Packet::SynchronizePosition(teleport)) => {
+                let mut id = Vec::new();
+                encode_varint(teleport.id, &mut id);
+                self.connection.send(play::ACCEPT_TELEPORTATION_ID, &id).await?;
+                Ok(())
+            }
+            Some(play::Packet::GameEvent { .. }) | None => Ok(()),
+        }
     }
 }
 
@@ -92,9 +175,20 @@ pub async fn connect(
     name: &str,
     deadline: Duration,
 ) -> Result<Joined, JoinError> {
+    connect_with_render_distance(host, port, name, 4, deadline).await
+}
+
+/// Join while advertising the requested chunk view distance (2 through 8).
+pub async fn connect_with_render_distance(
+    host: &str,
+    port: u16,
+    name: &str,
+    render_distance: u8,
+    deadline: Duration,
+) -> Result<Joined, JoinError> {
     let handshake = login::handshake(host, port)?;
     let start = login::start(name)?;
-    timeout(deadline, exchange(host, port, &handshake, &start))
+    timeout(deadline, exchange(host, port, &handshake, &start, render_distance))
         .await
         .map_err(|_| JoinError::Timeout)?
 }
@@ -125,6 +219,7 @@ async fn exchange(
     port: u16,
     handshake: &[u8],
     start: &[u8],
+    render_distance: u8,
 ) -> Result<Joined, JoinError> {
     let mut connection = Connection::connect(host, port).await?;
     let mut budget = Budget::default();
@@ -132,7 +227,9 @@ async fn exchange(
     connection.send(login::START_ID, start).await?;
     let profile = login_phase(&mut connection, &mut budget).await?;
     connection.send(login::ACK_ID, &[]).await?;
-    connection.send(configuration::INFORMATION_ID, &configuration::information()?).await?;
+    connection
+        .send(configuration::INFORMATION_ID, &configuration::information(render_distance)?)
+        .await?;
     let (registries, metadata) = configure(&mut connection, &mut budget).await?;
     connection.send(configuration::FINISH_ID, &[]).await?;
     let packet = budget.read(&mut connection).await?;
@@ -144,8 +241,19 @@ async fn exchange(
     {
         return Err(JoinError::InvalidState("unknown Play dimension-type index"));
     }
-    let (center_chunk, spawn, chunks) = await_spawn(&mut connection, &mut budget).await?;
-    Ok(Joined { profile, world, registries, metadata, center_chunk, spawn, chunks, connection })
+    let (center_chunk, spawn, chunks, batch_started) =
+        await_spawn(&mut connection, &mut budget).await?;
+    Ok(Joined {
+        profile,
+        world,
+        registries,
+        metadata,
+        center_chunk,
+        spawn,
+        chunks,
+        connection,
+        batch_started,
+    })
 }
 
 /// Consume Play packets until the initial spawn teleport is confirmed,
@@ -156,7 +264,8 @@ async fn exchange(
 async fn await_spawn(
     connection: &mut Connection,
     budget: &mut Budget,
-) -> Result<(Option<(i32, i32)>, play::Teleport, Vec<chunk::LevelChunk>), JoinError> {
+) -> Result<(Option<(i32, i32)>, play::Teleport, Vec<chunk::LevelChunk>, Option<Instant>), JoinError>
+{
     let mut center_chunk = None;
     let mut chunks = Vec::new();
     let mut batch_started = None;
@@ -193,7 +302,7 @@ async fn await_spawn(
                     encode_varint(teleport.id, &mut id);
                     connection.send(play::ACCEPT_TELEPORTATION_ID, &id).await?;
                     connection.send(play::PLAYER_LOADED_ID, &[]).await?;
-                    return Ok((center_chunk, teleport, chunks));
+                    return Ok((center_chunk, teleport, chunks, batch_started));
                 }
                 // Game Event, and every packet ID this client doesn't
                 // recognize (entity data, recipes, ...), are later work.

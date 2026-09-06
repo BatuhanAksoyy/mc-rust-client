@@ -30,7 +30,8 @@ accepted as older layouts.
 - Login: compression changes apply immediately after the negotiation packet,
   including already-buffered next frames. Validate profile properties and exact
   field consumption. Reply to plugin queries as unsupported, cookies as absent.
-- Configuration: send Client Information (en_US, view 4, hidden chat, colors on,
+- Configuration: send Client Information (en_US, caller-selected view distance 2–8,
+  default 4; hidden chat, colors on,
   all skin parts, right hand, filtering off, listings off, all particles).
 - Reply to Known Packs with an empty list: no bundled registry definitions are
   claimed. Reject omitted entry data; do not invent registry content. Preserve
@@ -65,6 +66,11 @@ accepted as older layouts.
   Chunk Batch Finished without a preceding Start is rejected. Global block/biome
   IDs are retained as opaque integers — resolving them into named blocks needs
   a registry this client does not have yet.
+- After spawn, the render path drains complete chunk batches until the requested
+  square view area is present or a bounded 10-second collection window expires.
+  It continues replying to chunk-batch flow control, keep-alives and teleports,
+  replaces duplicate chunk coordinates, and renders whatever bounded subset arrived.
+  Continuous loading while the window is open and unload handling remain later work.
 
 ## Bounds and verification
 

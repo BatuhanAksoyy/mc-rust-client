@@ -2,7 +2,7 @@
 //! [Reference](https://minecraft.wiki/w/Java_Edition_protocol/Packets#Configuration).
 
 use crate::{
-    CodecError,
+    CodecError, encode_varint,
     framing::RawPacket,
     nbt::{self, NbtError, Tag},
     types::{Reader, encode_string},
@@ -78,11 +78,15 @@ pub enum Packet<'a> {
     ServerLinks,
 }
 
-/// Fixed development settings, not a user-facing preferences API yet.
-pub fn information() -> Result<Vec<u8>, CodecError> {
+/// Client settings sent during Configuration, with a validated chunk view distance.
+pub fn information(view_distance: u8) -> Result<Vec<u8>, CodecError> {
+    if !(2..=8).contains(&view_distance) {
+        return Err(CodecError::InvalidValue("render distance"));
+    }
     let mut body = Vec::new();
     encode_string("en_US", 16, &mut body)?;
-    body.extend_from_slice(&[4, 2, 1, 0x7f, 1, 0, 0, 0]);
+    encode_varint(i32::from(view_distance), &mut body);
+    body.extend_from_slice(&[2, 1, 0x7f, 1, 0, 0, 0]);
     Ok(body)
 }
 

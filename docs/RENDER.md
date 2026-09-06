@@ -36,7 +36,9 @@ Milestones:
    captured (`CursorGrabMode::Locked`, falling back to `Confined`) for FPS-style look.
    The old `camera::OrbitCamera` is gone — nothing used it once real look/move input
    landed.
-2c. **Done.** Render the complete initial chunk batch returned by `join`, positioned
+2c. **Done.** Render the complete initial chunk view returned by `join`, including
+   post-spawn batches collected for the CLI's adjustable `--render-distance` (2–8,
+   default 4), positioned
    relative to the chunk containing the server-confirmed spawn. Chunk X/Z are world
    coordinates in 16-block units; translating them around that nearby origin keeps GPU
    coordinates small. Cull faces across loaded chunk boundaries. If the spawn chunk was

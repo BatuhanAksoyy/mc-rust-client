@@ -41,10 +41,10 @@ below. Declared future-phase dependencies are added when their code lands.
    and collision against the one loaded chunk, at a fixed 20 TPS with render
    interpolation (`play.rs`; `mc_render::Game` is the render-loop seam so `mc-render`
    still holds no game logic, `RENDER.md`). Continuous chunk streaming as the player
-   moves is still open (still offline). The complete pre-spawn view-area batch now
-   renders with world-relative placement and cross-chunk face culling (`RENDER.md`
-   milestone 2c); this is not continuous streaming and does not keep the Play
-   connection alive in the window yet.
+   moves is still open (still offline). Complete pre/post-spawn batches for an adjustable
+   initial render distance now render with world-relative placement and cross-chunk face
+   culling (`RENDER.md` milestone 2c); this is not continuous streaming and does not
+   keep the Play connection alive in the window yet.
 9. Perf pass + cross-platform CI.
 10. LAST: `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI) + legal review.
 

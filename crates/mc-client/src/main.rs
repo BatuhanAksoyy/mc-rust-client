@@ -61,6 +61,9 @@ enum Command {
         /// Overall join deadline, in milliseconds.
         #[arg(long, default_value_t = 30_000, value_parser = clap::value_parser!(u64).range(1..=300_000))]
         timeout_ms: u64,
+        /// Chunk radius requested from the server (the managed server caps this at 4).
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(2..=8))]
+        render_distance: u8,
     },
     /// Query server status and measure ping latency without logging in.
     Status {
@@ -85,8 +88,8 @@ async fn main() -> ExitCode {
         Command::Local { pumpkin, session, port, startup_seconds, check } => {
             run_local(pumpkin, session, port, startup_seconds, check).await
         }
-        Command::Render { host, port, name, timeout_ms } => {
-            run_render(host, port, name, timeout_ms).await
+        Command::Render { host, port, name, timeout_ms, render_distance } => {
+            run_render(host, port, name, timeout_ms, render_distance).await
         }
         Command::Status { host, port, timeout_ms } => run_status(host, port, timeout_ms).await,
     }
@@ -185,16 +188,32 @@ async fn run_local(
 /// platform's main thread on macOS); calling it here is safe only because
 /// nothing else is scheduled on this single-threaded runtime by the time we
 /// reach it — the join future has already resolved.
-async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> ExitCode {
-    let joined =
-        match mc_client::join::connect(&host, port, &name, Duration::from_millis(timeout_ms)).await
-        {
-            Ok(joined) => joined,
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::FAILURE;
-            }
-        };
+async fn run_render(
+    host: String,
+    port: u16,
+    name: String,
+    timeout_ms: u64,
+    render_distance: u8,
+) -> ExitCode {
+    let mut joined = match mc_client::join::connect_with_render_distance(
+        &host,
+        port,
+        &name,
+        render_distance,
+        Duration::from_millis(timeout_ms),
+    )
+    .await
+    {
+        Ok(joined) => joined,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = joined.load_initial_chunks(render_distance, Duration::from_secs(10)).await {
+        eprintln!("failed while loading the initial chunk view: {error}");
+        return ExitCode::FAILURE;
+    }
     if joined.chunks.is_empty() {
         eprintln!(
             "reached spawn but received no chunk beforehand; nothing to render (try again, or a larger view distance)"

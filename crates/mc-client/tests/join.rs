@@ -371,6 +371,19 @@ impl Server {
         assert_eq!(player_loaded.id, play::PLAYER_LOADED_ID);
         assert!(player_loaded.payload.is_empty());
     }
+
+    async fn drive_post_spawn_chunks(&mut self) {
+        let mut packets = vec![(chunk::BATCH_START_ID, Vec::new())];
+        for x in 0..24 {
+            packets.push((chunk::LEVEL_CHUNK_WITH_LIGHT_ID, minimal_chunk(x, 0)));
+        }
+        packets.push((chunk::BATCH_FINISHED_ID, varint(24)));
+        self.send_batch(&packets).await;
+
+        let received = self.read().await;
+        assert_eq!(received.id, chunk::BATCH_RECEIVED_ID);
+        assert_eq!(received.payload.len(), 4);
+    }
 }
 
 async fn connect(port: u16, deadline: Duration) -> Result<join::Joined, join::JoinError> {
@@ -401,14 +414,19 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
 
         let info = server.read().await;
         assert_eq!(info.id, configuration::INFORMATION_ID);
-        assert_eq!(info.payload.as_ref(), configuration::information().unwrap());
+        assert_eq!(info.payload.as_ref(), configuration::information(4).unwrap());
 
         server.drive_configuration_sequence().await;
         server.send(play::LOGIN_ID, &play_login(123, 0, "minecraft:overworld", 1, -1, true)).await;
         server.drive_spawn_sequence().await;
+        server.drive_post_spawn_chunks().await;
     };
 
-    let client = Box::pin(connect(port, Duration::from_secs(5)));
+    let client = Box::pin(async {
+        let mut joined = connect(port, Duration::from_secs(5)).await?;
+        joined.load_initial_chunks(2, Duration::from_secs(5)).await?;
+        Ok::<_, join::JoinError>(joined)
+    });
     let ((), result) =
         Box::pin(timeout(Duration::from_secs(5), async { tokio::join!(server, client) }))
             .await
@@ -445,7 +463,7 @@ async fn full_join_reaches_play_with_compression_coalescing_and_full_registry_re
     assert_eq!(joined.spawn.pitch.to_bits(), 0.0_f32.to_bits());
     assert_eq!(joined.spawn.flags, 0);
 
-    assert_eq!(joined.chunks.len(), 1);
+    assert_eq!(joined.chunks.len(), 25);
     assert_eq!((joined.chunks[0].x, joined.chunks[0].z), (1, -3));
     assert_eq!(joined.chunks[0].sections.len(), 1);
     assert_eq!(joined.chunks[0].sections[0].block_states.get(0), Some(0));
