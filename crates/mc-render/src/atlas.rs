@@ -258,11 +258,12 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, Vec<RgbaI
     let uv_of = |index: usize| -> [f32; 4] {
         let index = u32::try_from(index).unwrap_or(u32::MAX);
         let (col, row) = (index % columns, index / columns);
+        let inset = 0.5_f32;
         [
-            (col * TILE) as f32 / atlas_w as f32,
-            (row * TILE) as f32 / atlas_h as f32,
-            ((col + 1) * TILE) as f32 / atlas_w as f32,
-            ((row + 1) * TILE) as f32 / atlas_h as f32,
+            (col * TILE) as f32 / atlas_w as f32 + inset / atlas_w as f32,
+            (row * TILE) as f32 / atlas_h as f32 + inset / atlas_h as f32,
+            ((col + 1) * TILE) as f32 / atlas_w as f32 - inset / atlas_w as f32,
+            ((row + 1) * TILE) as f32 / atlas_h as f32 - inset / atlas_h as f32,
         ]
     };
 
@@ -325,11 +326,9 @@ fn mip_chain(tile: &RgbaImage) -> [RgbaImage; MIP_LEVELS as usize] {
 
 /// One 2×2 box-filter downsample step, halving both dimensions (rounding up,
 /// though every caller here only ever starts from a power of two). Channels
-/// are averaged directly (no premultiplied-alpha correction) — a reasonable
-/// first cut for resource-pack textures, whose only real alpha use here is
-/// water's uniform ~0.7 and leaves'/glass's fully-transparent cutout regions,
-/// neither of which has a sharp opaque/transparent edge that this would
-/// visibly fringe.
+/// RGB is averaged premultiplied by alpha, then unpremultiplied. This keeps
+/// transparent padding colors from creating pale halos around leaves and
+/// cutout plants at distance; water's uniform alpha remains unchanged.
 fn downsample(image: &RgbaImage) -> RgbaImage {
     let (width, height) = (image.width(), image.height());
     let (out_width, out_height) = (width.div_ceil(2).max(1), height.div_ceil(2).max(1));
@@ -337,11 +336,22 @@ fn downsample(image: &RgbaImage) -> RgbaImage {
         let mut channels = [0u32; 4];
         for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
             let (sx, sy) = ((2 * x + dx).min(width - 1), (2 * y + dy).min(height - 1));
-            for (sum, sample) in channels.iter_mut().zip(image.get_pixel(sx, sy).0) {
-                *sum += u32::from(sample);
-            }
+            let [red, green, blue, alpha] = image.get_pixel(sx, sy).0;
+            channels[0] += u32::from(red) * u32::from(alpha);
+            channels[1] += u32::from(green) * u32::from(alpha);
+            channels[2] += u32::from(blue) * u32::from(alpha);
+            channels[3] += u32::from(alpha);
         }
-        image::Rgba(channels.map(|sum| u8::try_from(sum / 4).unwrap_or(u8::MAX)))
+        let alpha = channels[3] / 4;
+        let unpremultiply = |sum: u32| {
+            u8::try_from((sum / 4 * 255).checked_div(alpha).unwrap_or(0)).unwrap_or(u8::MAX)
+        };
+        image::Rgba([
+            unpremultiply(channels[0]),
+            unpremultiply(channels[1]),
+            unpremultiply(channels[2]),
+            u8::try_from(alpha).unwrap_or(u8::MAX),
+        ])
     })
 }
 
