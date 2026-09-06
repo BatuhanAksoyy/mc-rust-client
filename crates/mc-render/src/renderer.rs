@@ -246,9 +246,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        // Reversed-Z (`play.rs`'s `perspective_infinite_reverse`):
-                        // "infinitely far" is depth 0, not 1.
-                        load: wgpu::LoadOp::Clear(0.0),
+                        load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
@@ -482,13 +480,9 @@ fn create_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(depth_write_enabled),
-            // Reversed-Z (`play.rs`'s `perspective_infinite_reverse`): nearer
-            // is a *larger* depth value, so "passes" is GreaterEqual, not
-            // LessEqual. Still an inclusive compare for the same reason the
-            // non-reversed version was: layered resource models (grass side +
-            // tinted overlay) intentionally emit coplanar quads in model order,
-            // and the later one must still win the tie.
-            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            // Layered resource models (for example grass side + tinted
+            // overlay) intentionally emit coplanar quads in model order.
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
