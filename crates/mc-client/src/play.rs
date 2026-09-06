@@ -100,8 +100,22 @@ impl Game for RenderGame {
         let view = glam::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
         // wgpu's NDC Z range is [0, 1] regardless of backend (Metal/Vulkan/DX12/GL
         // are all normalized to this by wgpu itself), matching the "directx" convention.
-        let projection =
-            glam::camera::rh::proj::directx::perspective(FOV_Y, aspect_ratio, 0.05, 1000.0);
+        //
+        // Reversed-Z (`perspective_infinite_reverse`, `Renderer`'s depth
+        // pipeline state) instead of a finite far plane: a chunk-batch scene
+        // has no natural "far" distance to guess at, and a standard
+        // (non-reversed) depth buffer concentrates almost all of a float32
+        // depth's precision within the first few meters of `near` regardless
+        // of how far the chosen far plane actually is — anything at a real
+        // render distance away, especially viewed at a grazing angle (a
+        // water surface stretching toward the horizon), is left fighting
+        // for what precision remains, visible as flickering noise wherever
+        // two surfaces are close in world space but far from the camera.
+        let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
+            FOV_Y,
+            aspect_ratio,
+            0.05,
+        );
         projection * view
     }
 }

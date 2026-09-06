@@ -133,6 +133,16 @@ Milestones:
    many differently-sloped blocks, an underwater drop-off's stacked side
    faces). Lava draws through the ordinary opaque/cutout pass instead — its
    texture has no real alpha variation, so it needs no special treatment.
+   The camera projection (`play.rs`'s `view_projection`) is reversed-Z
+   (`perspective_infinite_reverse`, matching `Renderer`'s depth clear value
+   0.0 and `GreaterEqual` compare) rather than a finite far plane: a
+   standard depth buffer spends almost all of a float32 depth's precision
+   within the first few meters of `near` no matter how far the chosen far
+   plane actually is, so any two surfaces close to each other in world
+   space but far from the camera — a water surface stretching toward the
+   horizon, viewed at a grazing angle, most of all — were left fighting
+   over what little precision remained, visible as flickering noise right
+   at the surfaces' shared edge.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.
