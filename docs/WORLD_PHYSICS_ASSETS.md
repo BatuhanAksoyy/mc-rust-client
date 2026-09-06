@@ -46,10 +46,19 @@ PY
   dropped whole-tick time when overloaded. It preserves fractional time exactly,
   owns no wall clock, and never sleeps. This policy is tested separately from
   future movement/physics parity. See `FOUNDATION.md`.
-- Re-implement from observation + wiki, verified by tests:
-  - Movement: sprint 5.6 m/s, walk 4.3, sneak 1.3, jump vY 0.42, gravity 0.08/tick, drag 0.98/0.91.
-  - Collision: AABB vs voxel grid, step, fluids, ladders (add per-behavior tests).
-- "Feels like Java": input handling (GLFW codes documented, we use `winit` codes mapped identically), FOV, sensitivity, particles/sounds timing.
+- **Done.** `physics.rs` implements `PlayerController::tick`: walk 4.317 blocks/s,
+  sprint 5.612, sneak 1.31 (wiki-exact, not the doc's earlier rounded figures), jump
+  vY 0.42, gravity 0.08/tick, vertical drag 0.98/tick, matching vanilla's numbers.
+  Horizontal acceleration (snappy on the ground, sliding in the air) is a simplified
+  two-constant model, not vanilla's slipperiness-derived formula — ice, soul sand,
+  water, ladders and slime bounce are not modeled yet. Collision is discrete
+  AABB-vs-voxel against one resolved `mc_world::Chunk` (no continuous sweep, no
+  cross-chunk collision — both are fine at this milestone's single-chunk scope,
+  `AI-GUIDE.md` step 8). Fully unit-tested without a renderer or network.
+- `play.rs` is the `mc_render::Game` impl driving this at 20 TPS from `TickScheduler`,
+  applying mouse-look every frame (not gated by the tick, matching vanilla) and
+  lerping the camera between the previous/current tick's position by `alpha`.
+- "Feels like Java": input handling (GLFW codes documented, we use `winit` codes mapped identically — WASD, Space, Left Shift, Left Ctrl), FOV 70°. Sensitivity/particles/sounds timing are later work.
 - Keep `tick()` deterministic + unit-testable without renderer/network.
 
 ## ASSETS (runtime only)

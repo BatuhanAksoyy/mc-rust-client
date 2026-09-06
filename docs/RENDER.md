@@ -24,11 +24,18 @@ Milestones:
    pipeline directly rather than as a separate throwaway example.
 2. **Done.** Single chunk render from synthetic data (no assets needed). `mesh::mesh_chunk`
    culls internal faces and bakes a fixed per-face brightness (no atlas, no real lighting
-   yet); `renderer::Renderer` owns the wgpu device/surface/pipeline; `camera::OrbitCamera`
-   is a fixed-radius orbit (no look/move input yet — that's `mc-client`'s tick loop,
-   `WORLD_PHYSICS_ASSETS.md`). `mc-client render <host>` wires it to a live join.
-   Verified against a real local Pumpkin server (window registers as a foreground GUI
-   app in the window server; 24 sections / 55,488 vertices meshed from a real chunk).
+   yet); `renderer::Renderer` owns the wgpu device/surface/pipeline. `mc-client render <host>`
+   wires it to a live join. Verified against a real local Pumpkin server (window registers
+   as a foreground GUI app in the window server; 24 sections / 55,488 vertices meshed from
+   a real chunk).
+2b. **Done.** Real first-person movement/camera, still holding no game logic here:
+   `app::Game`/`InputState` are the seam — `App` (this crate) owns the window, held
+   keys, and accumulated mouse-look delta, and hands them to a caller-supplied `Game`
+   once per frame; `mc-client`'s `play::RenderGame` is the concrete `Game`, owning
+   physics (`WORLD_PHYSICS_ASSETS.md`) and the view-projection matrix. Mouse is
+   captured (`CursorGrabMode::Locked`, falling back to `Confined`) for FPS-style look.
+   The old `camera::OrbitCamera` is gone — nothing used it once real look/move input
+   landed.
 3. Atlas + lighting + fog matching vanilla screenshots (visual diff test, assets from cache).
    Needs a block-state → model/texture resolver; `BlockRegistry` currently only has
    name/color, not model geometry.

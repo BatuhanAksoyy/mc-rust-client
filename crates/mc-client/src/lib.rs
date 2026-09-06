@@ -3,6 +3,8 @@
 
 pub mod join;
 pub mod local;
+pub mod physics;
+pub mod play;
 pub mod status;
 pub mod tick;
 mod transport;

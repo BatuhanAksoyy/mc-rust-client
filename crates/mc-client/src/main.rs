@@ -205,23 +205,35 @@ async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> E
     let chunk = mc_world::Chunk::from_level(level_chunk);
     let mesh = mc_render::mesh::mesh_chunk(&chunk, &registry);
     eprintln!(
-        "Rendering chunk ({}, {}): {} sections, {} vertices. Close the window to exit.",
+        "Rendering chunk ({}, {}): {} sections, {} vertices. WASD to move, mouse to look, \
+         Space to jump, Shift to sneak, Ctrl to sprint. Escape or close the window to exit.",
         chunk.position.x,
         chunk.position.z,
         chunk.section_count(),
         mesh.vertices.len()
     );
-    #[allow(clippy::cast_precision_loss)] // A chunk's height in blocks is tiny.
-    let height = (chunk.section_count() * 16) as f32;
-    let target = glam::Vec3::new(8.0, height * 0.5, 8.0);
-    let radius = height.max(32.0) * 1.2;
-    match mc_render::run(mesh, "mc-rust-client", target, radius) {
+    let spawn = spawn_position(&chunk, &registry);
+    let game = mc_client::play::RenderGame::new(chunk, registry, spawn);
+    match mc_render::run(mesh, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Spawn above the chunk's center column, a few blocks over its highest
+/// solid block so the player visibly drops in and lands (or, for an
+/// all-air column, at mid-height — there's nothing to land on).
+#[allow(clippy::cast_precision_loss)] // A chunk's height in blocks is at most a few hundred.
+fn spawn_position(chunk: &mc_world::Chunk, registry: &mc_world::BlockRegistry) -> glam::Vec3 {
+    let height = i32::try_from(chunk.section_count() * 16).unwrap_or(0);
+    let feet_y = (0..height)
+        .rev()
+        .find(|&y| chunk.block_at(8, y, 8).is_some_and(|id| !registry.is_air(id)))
+        .map_or(height as f32 * 0.5, |ground| ground as f32 + 3.0);
+    glam::Vec3::new(8.0, feet_y, 8.0)
 }
 
 async fn run_status(host: String, port: u16, timeout_ms: u64) -> ExitCode {

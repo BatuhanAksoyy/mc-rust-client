@@ -30,9 +30,16 @@ below. Declared future-phase dependencies are added when their code lands.
    per-block colors, no assets required yet. `mc-client render <host>` joins, meshes
    the first received chunk, and shows it — verified against a live Pumpkin server.
    A texture atlas from cached assets (`RENDER.md` milestone 3) is later work.
-7. `mc-client` tick loop + movement physics tests.
-8. Full join loop: continuous chunk streaming as the player moves, camera/movement
-   input replacing the static orbit camera (still offline).
+7. **Done.** `mc-client` tick loop + movement physics tests. `physics.rs` implements
+   Java-Edition-matching walk/sprint/sneak speed, gravity, jump, and AABB-vs-voxel
+   collision against a resolved chunk — deterministic, unit-tested without a
+   renderer or network (`WORLD_PHYSICS_ASSETS.md`).
+8. **Movement/camera done; streaming still open.** `mc-client render` drives a real
+   first-person camera: WASD relative to mouse-look yaw, jump/sneak/sprint, gravity,
+   and collision against the one loaded chunk, at a fixed 20 TPS with render
+   interpolation (`play.rs`; `mc_render::Game` is the render-loop seam so `mc-render`
+   still holds no game logic, `RENDER.md`). Continuous chunk streaming as the player
+   moves past the first chunk is still open (still offline).
 9. Perf pass + cross-platform CI.
 10. LAST: `mc-auth` device-code + ownership gate (mock HTTP; no live calls in CI) + legal review.
 
