@@ -199,16 +199,11 @@ fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
     // pass — `Renderer`, `RENDER.md` milestone 3).
     assert!(mesh.vertices.is_empty());
     assert_eq!(mesh.translucent.len(), 6 * 6);
-    // With no same-fluid neighbor to blend with, all 4 top corners fall back
-    // to this source block's own height (8/9) — a flat top, not a slope.
-    let top_heights: Vec<f32> = mesh
-        .translucent
-        .iter()
-        .filter(|vertex| vertex.position[1] > 0.0) // Bottom-face vertices are always exactly y=0.
-        .map(|v| v.position[1])
-        .collect();
-    assert!(!top_heights.is_empty());
-    assert!(top_heights.iter().all(|&h| (h - 8.0 / 9.0).abs() < 1e-6), "{top_heights:?}");
+    // With no same-fluid neighbor to blend with, all 4 top corners use the
+    // source height minus the deliberate depth-fighting inset.
+    let top_heights: Vec<f32> = mesh.translucent[..6].iter().map(|v| v.position[1]).collect();
+    let expected = 8.0 / 9.0 - 0.001;
+    assert!(top_heights.iter().all(|&h| (h - expected).abs() < 1e-6), "{top_heights:?}");
 }
 
 #[test]
@@ -250,12 +245,11 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
     assert!(mesh.vertices.is_empty());
     assert_eq!(mesh.translucent.len(), (5 + 5) * 6);
 
+    let top_vertices = mesh.translucent[..6].iter().chain(mesh.translucent[30..36].iter());
     let top_y_at = |x: f32| -> Vec<f32> {
-        mesh.translucent
-            .iter()
-            // Bottom-face vertices are always exactly y=0; a top vertex is
-            // never that low (`own_height`'s range is 1/9..=1.0).
-            .filter(|v| v.position[1] > 0.0 && (v.position[0] - x).abs() < 1e-6)
+        top_vertices
+            .clone()
+            .filter(|v| (v.position[0] - x).abs() < 1e-6)
             .map(|v| v.position[1])
             .collect()
     };
@@ -263,9 +257,9 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
         assert!(!values.is_empty());
         assert!(values.iter().all(|&h| (h - expected).abs() < 1e-6), "{values:?} != {expected}");
     };
-    close(&top_y_at(0.0), 8.0 / 9.0); // Source's own far edge: no neighbor there.
-    close(&top_y_at(1.0), f32::midpoint(8.0 / 9.0, 4.0 / 9.0)); // Shared boundary: blended.
-    close(&top_y_at(2.0), 4.0 / 9.0); // Level-4's own far edge: no neighbor there.
+    close(&top_y_at(0.0), 8.0 / 9.0 - 0.001); // Source's own far edge.
+    close(&top_y_at(1.0), f32::midpoint(8.0 / 9.0, 4.0 / 9.0) - 0.001); // Shared edge.
+    close(&top_y_at(2.0), 4.0 / 9.0 - 0.001); // Level-4's own far edge.
 }
 
 #[test]

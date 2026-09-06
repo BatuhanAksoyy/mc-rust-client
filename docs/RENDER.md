@@ -79,14 +79,14 @@ Milestones:
    from any model flag, since solidity and texture transparency are
    unrelated in Java (leaves and glass are full cubes with a real collision
    box — `solid` — whose texture still has alpha gaps or blend — not
-   `opaque`). `mesh_chunk`'s own neighbor-face culling (`mesh.rs`'s
-   `occludes`) requires *both* flags rather than `is_air` alone: a
-   cross-shaped decoration is non-air but covers almost none of a
-   neighboring face (fails `solid`), and leaves/glass are solid full cubes
-   but don't fully cover the face either (fail `opaque`) — either way, a
-   block standing next to or under one (a mushroom, a flower, tall grass, a
-   log behind leaves, ...) keeps that face instead of having it culled away
-   as if the neighbor were a real, fully-covering occluder. `mc-client`
+   `opaque`). Face occlusion is more precise than that state-wide flag:
+   `Atlas::occludes_face` checks for an opaque model quad covering the whole
+   requested boundary face. This matters for layered full cubes such as grass:
+   its transparent tinted overlay makes the state non-opaque overall, but an
+   opaque base quad still hides a water face beside it. Conflating those facts
+   emitted coplanar grass/dirt and water faces, causing flickering triangles.
+   Leaves still do not occlude because their base face itself has alpha gaps;
+   partial decorations do not cover a full boundary. `mc-client`
    feeds both resolved ID sets into `BlockRegistry` (`with_non_solid` and
    `with_non_opaque`) *before* meshing, not just before physics — the mesher
    needs the same view collision uses, or the fix has no effect on what's
@@ -106,9 +106,13 @@ Milestones:
    bypass `atlas::model` entirely: `fluid::level` reads the `level` property,
    `fluid::own_height`/`corner_height` follow the fluid-height and
    corner-blending convention long publicly documented and independently
-   reimplemented by non-Mojang tools (never decompiled source), and
+   reimplemented by non-Mojang tools, and
    `mesh_fluid_block` bakes a real sloped top (flat bottom, side faces
-   following the slope) instead of a flat full cube. `Atlas::fluid_uv` packs
+   following the slope) instead of a flat full cube. Fluid surfaces use a
+   small inward boundary bias so they cannot be coplanar with adjacent solid
+   faces; this was clean-room cross-checked against
+   `net.minecraft.client.renderer.block.FluidRenderer#tesselate @ 26.2`.
+   `Atlas::fluid_uv` packs
    the two fixed `water_still`/`lava_still` textures (their real vanilla
    paths, unconditionally — no model ever references them) into the same
    atlas; water is tinted with `BlockRegistry::color`'s flat blue (its

@@ -120,6 +120,7 @@ pub fn mesh_chunks(
                             &by_position,
                             chunk,
                             registry,
+                            atlas,
                             kind,
                             x,
                             y,
@@ -138,7 +139,9 @@ pub fn mesh_chunks(
                         for quad in &model.quads {
                             let visible = quad.cull.is_none_or(|(dx, dy, dz)| {
                                 neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
-                                    .is_none_or(|neighbor| !occludes(registry, neighbor))
+                                    .is_none_or(|neighbor| {
+                                        !occludes(registry, atlas, neighbor, (-dx, -dy, -dz))
+                                    })
                             });
                             if visible {
                                 push_baked_quad(&mut vertices, block, quad, registry.color(id));
@@ -148,7 +151,9 @@ pub fn mesh_chunks(
                     }
                     for &(dx, dy, dz, brightness) in &FACES {
                         let visible = neighbor_block(&by_position, chunk, x + dx, y + dy, z + dz)
-                            .is_none_or(|neighbor| !occludes(registry, neighbor));
+                            .is_none_or(|neighbor| {
+                                !occludes(registry, atlas, neighbor, (-dx, -dy, -dz))
+                            });
                         if visible {
                             push_face(
                                 &mut vertices,
@@ -177,6 +182,7 @@ fn mesh_fluid_block(
     by_position: &HashMap<ChunkPos, &Chunk>,
     chunk: &Chunk,
     registry: &BlockRegistry,
+    atlas: &Atlas,
     kind: FluidKind,
     x: i32,
     y: i32,
@@ -215,7 +221,7 @@ fn mesh_fluid_block(
             return false;
         }
         neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)
-            .is_none_or(|neighbor| !occludes(registry, neighbor))
+            .is_none_or(|neighbor| !occludes(registry, atlas, neighbor, (-dx, -dy, -dz)))
     };
     let faces = fluid::Faces {
         up: visible(0, 1, 0),
@@ -246,14 +252,11 @@ fn push_baked_quad(
 
 /// Whether a neighbor at `id` fully covers the face it shares with the block
 /// asking — the only case a face may be culled for. Solidity (a collision
-/// box) and opacity (a fully alpha-255 texture) are independent
-/// (`BlockRegistry::is_solid`/`is_opaque`): a cross-shaped plant is solid's
-/// opposite (non-solid, and its texture happens to be opaque where it exists
-/// at all), while leaves/glass are solid's counterexample the other way
-/// (solid, full-cube, but not opaque) — either gap alone means "doesn't
-/// fully occlude", so both flags must hold.
-fn occludes(registry: &BlockRegistry, id: u32) -> bool {
-    registry.is_solid(id) && registry.is_opaque(id)
+/// box) and whole-model opacity are independent. Resolved resource models use
+/// their actual opaque, full-boundary quads; unresolved states retain the
+/// registry's conservative solid-and-opaque fallback.
+fn occludes(registry: &BlockRegistry, atlas: &Atlas, id: u32, face: (i32, i32, i32)) -> bool {
+    atlas.occludes_face(id, face).unwrap_or_else(|| registry.is_solid(id) && registry.is_opaque(id))
 }
 
 fn neighbor_block(

@@ -165,7 +165,15 @@ pub fn push_fluid_block(
     uv_rect: [f32; 4],
     tint: [f32; 3],
 ) {
+    // Keep fluid surfaces just inside their cell. Adjacent block faces live
+    // exactly on integer boundaries; sharing that plane makes the depth
+    // winner unstable and produces dirt/water triangles while moving. This
+    // also follows the clean-room-observed boundary bias in Java 26.2's
+    // `net.minecraft.client.renderer.block.FluidRenderer#tesselate`.
+    const INSET: f32 = 0.001;
     let Corners { nw, ne, se, sw } = corners;
+    let [nw, ne, se, sw] = [nw, ne, se, sw].map(|height| (height - INSET).max(0.0));
+    let bottom = if faces.down { INSET } else { 0.0 };
     let [u0, v0, u1, v1] = uv_rect;
     let uv = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
     let mut push = |positions: [[f32; 3]; 4], brightness: f32| {
@@ -179,19 +187,35 @@ pub fn push_fluid_block(
         push([[0.0, nw, 0.0], [0.0, sw, 1.0], [1.0, se, 1.0], [1.0, ne, 0.0]], 1.0);
     }
     if faces.down {
-        push([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]], 0.4);
+        push([[0.0, bottom, 0.0], [1.0, bottom, 0.0], [1.0, bottom, 1.0], [0.0, bottom, 1.0]], 0.4);
     }
     if faces.north {
-        push([[0.0, 0.0, 0.0], [0.0, nw, 0.0], [1.0, ne, 0.0], [1.0, 0.0, 0.0]], 0.8);
+        push([[0.0, bottom, INSET], [0.0, nw, INSET], [1.0, ne, INSET], [1.0, bottom, INSET]], 0.8);
     }
     if faces.south {
-        push([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, se, 1.0], [0.0, sw, 1.0]], 0.8);
+        push(
+            [
+                [0.0, bottom, 1.0 - INSET],
+                [1.0, bottom, 1.0 - INSET],
+                [1.0, se, 1.0 - INSET],
+                [0.0, sw, 1.0 - INSET],
+            ],
+            0.8,
+        );
     }
     if faces.east {
-        push([[1.0, 0.0, 0.0], [1.0, ne, 0.0], [1.0, se, 1.0], [1.0, 0.0, 1.0]], 0.6);
+        push(
+            [
+                [1.0 - INSET, bottom, 0.0],
+                [1.0 - INSET, ne, 0.0],
+                [1.0 - INSET, se, 1.0],
+                [1.0 - INSET, bottom, 1.0],
+            ],
+            0.6,
+        );
     }
     if faces.west {
-        push([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, sw, 1.0], [0.0, nw, 0.0]], 0.6);
+        push([[INSET, bottom, 0.0], [INSET, bottom, 1.0], [INSET, sw, 1.0], [INSET, nw, 0.0]], 0.6);
     }
 }
 

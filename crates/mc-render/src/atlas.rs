@@ -39,6 +39,8 @@ pub struct BakedQuad {
     pub cull: Option<(i32, i32, i32)>,
     /// Model-authored directional shading multiplier.
     pub brightness: f32,
+    /// Whether this quad's texture has no transparent pixels.
+    pub opaque: bool,
 }
 
 /// All baked quads selected for one numeric block state.
@@ -96,6 +98,19 @@ impl Atlas {
     #[must_use]
     pub fn is_opaque(&self, id: u32) -> Option<bool> {
         self.models.get(&id).map(|model| model.opaque)
+    }
+
+    /// Whether an opaque model quad completely covers this block boundary.
+    ///
+    /// `face` points outward from this block. Layered full cubes such as
+    /// grass can therefore occlude even though another overlay quad makes
+    /// the state-wide [`Self::is_opaque`] result false.
+    #[must_use]
+    pub fn occludes_face(&self, id: u32, face: (i32, i32, i32)) -> Option<bool> {
+        let model = self.models.get(&id)?;
+        Some(model.quads.iter().any(|quad| {
+            quad.opaque && quad.cull == Some(face) && covers_boundary(quad.positions, face)
+        }))
     }
 
     /// `kind`'s still texture's atlas rect, `None` when the resource pack
@@ -262,6 +277,7 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
                     tinted: quad.tinted,
                     cull: quad.cull.map(model::Direction::offset),
                     brightness: quad.brightness,
+                    opaque: tile_opaque[index],
                 })
             })
             .collect::<Option<Vec<_>>>()
@@ -276,6 +292,25 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
     (Atlas { models, white_uv: uv_of(white_index), water_uv, lava_uv }, atlas_image)
 }
 
+fn covers_boundary(positions: [[f32; 3]; 4], face: (i32, i32, i32)) -> bool {
+    const EPSILON: f32 = 1e-5;
+    let (normal_axis, boundary, axes) = match face {
+        (1, 0, 0) => (0, 1.0, [1, 2]),
+        (-1, 0, 0) => (0, 0.0, [1, 2]),
+        (0, 1, 0) => (1, 1.0, [0, 2]),
+        (0, -1, 0) => (1, 0.0, [0, 2]),
+        (0, 0, 1) => (2, 1.0, [0, 1]),
+        (0, 0, -1) => (2, 0.0, [0, 1]),
+        _ => return false,
+    };
+    positions.iter().all(|point| (point[normal_axis] - boundary).abs() <= EPSILON)
+        && axes.into_iter().all(|axis| {
+            let minimum = positions.iter().map(|point| point[axis]).reduce(f32::min).unwrap_or(0.0);
+            let maximum = positions.iter().map(|point| point[axis]).reduce(f32::max).unwrap_or(0.0);
+            minimum <= EPSILON && maximum >= 1.0 - EPSILON
+        })
+}
+
 /// Fixed vanilla asset paths for the two fluids' still texture (`fluid.rs`).
 /// No resource-pack data points at these — there's no model to reference
 /// them from — so `pack` loads them by this hardcoded path instead, the same
@@ -284,11 +319,48 @@ const FLUID_TEXTURES: [&str; 2] = ["block/water_still", "block/lava_still"];
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::BTreeMap, path::Path};
 
     use mc_world::{BlockRegistry, BlockState};
 
-    use super::Atlas;
+    use super::{Atlas, RgbaImage};
+
+    #[test]
+    fn opaque_base_quad_occludes_even_with_a_transparent_overlay() {
+        let root = std::env::temp_dir().join(format!(
+            "mc-rust-client-atlas-layer-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let write = |relative: &str, contents: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        };
+        write("blockstates/layered.json", r#"{"variants":{"":{"model":"block/layered"}}}"#);
+        write(
+            "models/block/layered.json",
+            r##"{"textures":{"base":"block/base","overlay":"block/overlay"},"elements":[
+              {"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#base","cullface":"north"}}},
+              {"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#overlay","cullface":"north"}}}
+            ]}"##,
+        );
+        let textures = root.join("textures/block");
+        std::fs::create_dir_all(&textures).unwrap();
+        RgbaImage::from_pixel(16, 16, image::Rgba([100, 80, 50, 255]))
+            .save(textures.join("base.png"))
+            .unwrap();
+        let mut overlay = RgbaImage::from_pixel(16, 16, image::Rgba([30, 150, 30, 255]));
+        overlay.get_pixel_mut(0, 0).0[3] = 0;
+        overlay.save(textures.join("overlay.png")).unwrap();
+        let state = BlockState { name: "minecraft:layered".into(), properties: BTreeMap::new() };
+        let (atlas, _) = Atlas::build(&root, [(7, &state)]);
+        std::fs::remove_dir_all(root).ok();
+
+        assert_eq!(atlas.is_opaque(7), Some(false));
+        assert_eq!(atlas.occludes_face(7, (0, 0, -1)), Some(true));
+        assert_eq!(atlas.occludes_face(7, (0, 0, 1)), Some(false));
+    }
 
     /// A block's collision shape (`Atlas::is_solid`) and its texture's alpha
     /// (`Atlas::is_opaque`) are independent: a full cube with a cutout
@@ -426,6 +498,14 @@ mod tests {
             let (id, _) = states.iter().find(|(_, state)| state.name.as_ref() == name).unwrap();
             assert!(atlas.lookup(*id).is_some(), "failed to bake {name}");
         }
+        let id_of =
+            |name: &str| states.iter().find(|(_, state)| state.name.as_ref() == name).unwrap().0;
+        let grass = id_of("minecraft:grass_block");
+        for face in [(0, 1, 0), (0, -1, 0), (0, 0, -1), (0, 0, 1), (1, 0, 0), (-1, 0, 0)] {
+            assert_eq!(atlas.occludes_face(grass, face), Some(true), "grass face {face:?}");
+        }
+        let leaves = id_of("minecraft:oak_leaves");
+        assert_eq!(atlas.occludes_face(leaves, (0, 0, -1)), Some(false));
         // Fluids never resolve via `lookup` (no blockstate/model JSON), but
         // the real `water_still`/`lava_still` textures should still load.
         assert!(
