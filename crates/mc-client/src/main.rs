@@ -278,7 +278,7 @@ fn build_atlas(
     registry: &mc_world::BlockRegistry,
 ) -> (
     mc_render::atlas::Atlas,
-    Vec<mc_render::atlas::RgbaImage>,
+    mc_render::atlas::RgbaImage,
     std::collections::HashSet<u32>,
     std::collections::HashSet<u32>,
 ) {

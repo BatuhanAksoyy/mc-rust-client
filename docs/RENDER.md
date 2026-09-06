@@ -91,19 +91,9 @@ Milestones:
    `with_non_opaque`) *before* meshing, not just before physics — the mesher
    needs the same view collision uses, or the fix has no effect on what's
    actually drawn.
-   The atlas is a real mip chain now (`Atlas::build`'s second return value:
-   5 levels, 16×16 down to 1×1 — `atlas::MIP_LEVELS`), each tile's own chain
-   built and packed in isolation *before* laying tiles into the shared
-   atlas image, so a lower level never blends pixels across an unrelated
-   neighboring tile's border (the standard atlas-mipmapping pitfall). The
-   sampler stays nearest-filtered within a level (preserving the blocky
-   look up close) but blends linearly between levels — without this, any
-   textured surface more than a couple of tiles away, or at a grazing
-   angle, aliased into shimmering noise; water's own thin, height-varying
-   quads (the only geometry here that ever spans less than a full block
-   vertically) suffered far worse than anything else, visible as flickering
-   right at a shoreline. No anisotropic filtering yet; lighting/fog still
-   fixed per-face brightness.
+   No mipmaps/anisotropy yet (one nearest-filtered texture, matching
+   vanilla's own default sampling); lighting/fog still fixed per-face
+   brightness.
    Tinted faces (`tintindex`, real per-biome colormap sampling in Java)
    multiply by `BlockRegistry::color`'s flat curated-by-name/hashed-by-ID
    stand-in (no biome data yet) instead — grass-family cross props

@@ -68,11 +68,10 @@ pub enum RendererError {
 
 impl Renderer {
     /// Create a renderer for `window`, sized to its current inner size, with
-    /// `atlas` (a full mip chain, coarsest last) bound as the chunk shader's
-    /// block texture — nearest-filtered within a level, matching
-    /// Minecraft's blocky look, linearly blended between levels; see
-    /// `atlas::Atlas`, `docs/RENDER.md` milestone 3.
-    pub fn new(window: Arc<Window>, atlas: &[image::RgbaImage]) -> Result<Self, RendererError> {
+    /// `atlas` bound as the chunk shader's block texture (an RGBA image —
+    /// nearest-filtered, matching Minecraft's blocky look; see
+    /// `atlas::Atlas`, `docs/RENDER.md` milestone 3).
+    pub fn new(window: Arc<Window>, atlas: &image::RgbaImage) -> Result<Self, RendererError> {
         let size = window.inner_size().max(winit::dpi::PhysicalSize::new(1, 1));
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window)?;
@@ -278,61 +277,46 @@ impl Renderer {
     }
 }
 
-/// Upload `levels` (a full mip chain, coarsest last — `atlas::Atlas::build`)
-/// as one mipmapped `Rgba8UnormSrgb` texture. The sampler stays
-/// nearest-filtered within a level (Minecraft's textures are hand-authored
-/// pixel art — linear filtering would blur the blocky look up close) but
-/// blends linearly between levels, matching vanilla's own default mipmap
-/// setting: without it, any textured surface more than a couple of tiles
-/// away, or seen at a grazing angle, aliases into shimmering noise — worst
-/// of all for water's own thin, height-varying quads, the only geometry
-/// here that ever spans less than a full block vertically.
+/// Upload `image` as a `Rgba8UnormSrgb` texture with a nearest-filtering
+/// sampler (Minecraft's textures are hand-authored pixel art — linear
+/// filtering would blur the blocky look).
 fn create_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    levels: &[image::RgbaImage],
+    image: &image::RgbaImage,
 ) -> (wgpu::TextureView, wgpu::Sampler) {
-    let base = &levels[0];
     let size =
-        wgpu::Extent3d { width: base.width(), height: base.height(), depth_or_array_layers: 1 };
-    let mip_level_count = u32::try_from(levels.len()).unwrap_or(1);
+        wgpu::Extent3d { width: image.width(), height: image.height(), depth_or_array_layers: 1 };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("atlas-texture"),
         size,
-        mip_level_count,
+        mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    for (level, image) in levels.iter().enumerate() {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: u32::try_from(level).unwrap_or(0),
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            image,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * image.width()),
-                rows_per_image: Some(image.height()),
-            },
-            wgpu::Extent3d {
-                width: image.width(),
-                height: image.height(),
-                depth_or_array_layers: 1,
-            },
-        );
-    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * image.width()),
+            rows_per_image: Some(image.height()),
+        },
+        size,
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("atlas-sampler"),
         mag_filter: wgpu::FilterMode::Nearest,
         min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::MipmapFilterMode::Linear,
         ..Default::default()
     });
     (view, sampler)
