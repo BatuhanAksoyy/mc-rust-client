@@ -121,13 +121,18 @@ Milestones:
    not implemented yet — only the first frame of the *still* texture is used
    on every face, same simplification already applied to every other
    animated texture in this atlas. Water's real alpha (baked into
-   `water_still` itself, ~0.7) blends through the single existing pipeline
-   (`renderer.rs`), which still writes depth for every draw — correct for
-   the common case (opaque ground meshed, then water above it blends
-   correctly against it), but two overlapping translucent surfaces (glass
-   behind water, water seen through water) aren't guaranteed to composite
-   right without a real depth-write-off translucent pass; not implemented
-   here as a deliberately smaller first step.
+   `water_still` itself, ~0.7) draws through its own pass (`Mesh::translucent`,
+   `Renderer`'s `translucent_pipeline`): same shader and bind group as
+   everything else, but depth writes off, drawn after the opaque/cutout pass
+   in the same render pass so it still tests against real depth without ever
+   writing its own — the initial single-pipeline version wrote depth for
+   translucent water same as everything else, which was fine for one water
+   quad over opaque ground but let one water quad's write block another
+   translucent surface's blend behind it, visible as moiré-like overdraw
+   wherever several water quads overlapped in screen space (a shoreline's
+   many differently-sloped blocks, an underwater drop-off's stacked side
+   faces). Lava draws through the ordinary opaque/cutout pass instead — its
+   texture has no real alpha variation, so it needs no special treatment.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.

@@ -37,8 +37,20 @@ impl Vertex {
 /// Triangle-list vertex data in block coordinates relative to a nearby chunk origin.
 #[derive(Debug, Clone, Default)]
 pub struct Mesh {
-    /// Non-indexed triangle list (6 vertices per visible face).
+    /// Non-indexed triangle list (6 vertices per visible face): everything
+    /// opaque or cutout-alpha-tested (real texture or debug color alike),
+    /// lava included — its texture has no real alpha variation, so it draws
+    /// correctly through the same depth-write-on pass as everything else.
     pub vertices: Vec<Vertex>,
+    /// Water's own non-indexed triangle list, drawn in a separate pass with
+    /// depth writes off (`Renderer`): water's alpha is real (baked into
+    /// `water_still`, ~0.7, not just cutout on/off), so drawing it through
+    /// the same depth-write-on pass as everything else let one water quad's
+    /// write block another translucent surface's blend behind it — visible
+    /// as noisy, moiré-like overdraw exactly where several water quads
+    /// overlap in screen space (a shoreline's many differently-sloped
+    /// blocks, an underwater drop-off's stacked side faces).
+    pub translucent: Vec<Vertex>,
 }
 
 /// `(dx, dy, dz, brightness)` per face: a cheap directional-light stand-in,
@@ -83,6 +95,7 @@ pub fn mesh_chunks(
     atlas: &Atlas,
 ) -> Mesh {
     let mut vertices = Vec::new();
+    let mut translucent = Vec::new();
     let by_position: HashMap<ChunkPos, &Chunk> =
         chunks.iter().map(|chunk| (chunk.position, chunk)).collect();
     for chunk in chunks {
@@ -100,8 +113,10 @@ pub fn mesh_chunks(
                         && let Some(uv) = atlas.fluid_uv(kind)
                     {
                         let tint = if kind.tinted() { registry.color(id) } else { [1.0; 3] };
+                        let target =
+                            if kind.translucent() { &mut translucent } else { &mut vertices };
                         mesh_fluid_block(
-                            &mut vertices,
+                            target,
                             &by_position,
                             chunk,
                             registry,
@@ -150,7 +165,7 @@ pub fn mesh_chunks(
             }
         }
     }
-    Mesh { vertices }
+    Mesh { vertices, translucent }
 }
 
 /// Mesh one fluid block: sample the up-to-9 same-fluid neighbors `fluid`'s

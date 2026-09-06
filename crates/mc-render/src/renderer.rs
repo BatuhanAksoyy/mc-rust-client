@@ -17,9 +17,22 @@ struct Uniforms {
     view_proj: [[f32; 4]; 4],
 }
 
-/// Owns the GPU device, surface and pipeline for one window. `render` draws
-/// one frame of a single opaque mesh with one view-projection matrix — this
-/// client has one chunk and no scene graph yet.
+/// Owns the GPU device, surface and pipelines for one window.
+///
+/// `render` draws one frame of a single mesh (opaque/cutout plus
+/// translucent halves) with one view-projection matrix — this client has
+/// one chunk batch and no scene graph yet.
+///
+/// Two pipelines share one shader/bind group, differing only in depth
+/// writes: `pipeline` (opaque + cutout — every real or debug-color block,
+/// lava included) writes depth normally, while `translucent_pipeline`
+/// (water only, `Mesh::translucent`) tests depth without writing it, so a
+/// water quad blends against whatever real geometry is already there
+/// instead of letting its own depth write block another translucent
+/// surface (or more water) drawn behind it — visible before as noisy,
+/// moiré-like overdraw wherever several water quads overlapped in screen
+/// space (a shoreline's many differently-sloped blocks, an underwater
+/// drop-off's stacked side faces).
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -27,10 +40,13 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
+    translucent_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
+    translucent_vertex_buffer: wgpu::Buffer,
+    translucent_vertex_count: u32,
 }
 
 /// Construction or GPU-adapter failure; there is no fallback renderer.
@@ -80,14 +96,27 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let (atlas_view, atlas_sampler) = create_atlas_texture(&device, &queue, atlas);
-        let (pipeline, bind_group) =
-            create_pipeline(&device, config.format, &uniform_buffer, &atlas_view, &atlas_sampler);
+        let (bind_group_layout, bind_group) =
+            create_bind_group(&device, &uniform_buffer, &atlas_view, &atlas_sampler);
+        let pipeline =
+            create_pipeline(&device, config.format, &bind_group_layout, true, "chunk-pipeline");
+        let translucent_pipeline = create_pipeline(
+            &device,
+            config.format,
+            &bind_group_layout,
+            false,
+            "chunk-translucent-pipeline",
+        );
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chunk-vertices"),
-            contents: &[],
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
+        let empty_vertex_buffer = |label| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: &[],
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        let vertex_buffer = empty_vertex_buffer("chunk-vertices");
+        let translucent_vertex_buffer = empty_vertex_buffer("chunk-translucent-vertices");
 
         Ok(Self {
             surface,
@@ -96,10 +125,13 @@ impl Renderer {
             config,
             depth_view,
             pipeline,
+            translucent_pipeline,
             uniform_buffer,
             bind_group,
             vertex_buffer,
             vertex_count: 0,
+            translucent_vertex_buffer,
+            translucent_vertex_count: 0,
         })
     }
 
@@ -114,21 +146,51 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, width, height);
     }
 
-    /// Replace the vertex buffer's contents with `mesh`. Reallocates only
-    /// when the mesh grows past the current buffer's capacity.
+    /// Replace both vertex buffers' contents with `mesh`. Each reallocates
+    /// only when its side of the mesh grows past its current capacity.
     pub fn set_mesh(&mut self, mesh: &Mesh) {
-        let bytes = bytemuck::cast_slice(&mesh.vertices);
-        if bytes.len() as wgpu::BufferAddress > self.vertex_buffer.size() {
-            self.vertex_buffer =
-                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("chunk-vertices"),
-                    contents: bytes,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
+        let (buffer, count) = Self::upload(
+            &self.device,
+            &self.queue,
+            &self.vertex_buffer,
+            "chunk-vertices",
+            &mesh.vertices,
+        );
+        self.vertex_buffer = buffer;
+        self.vertex_count = count;
+        let (buffer, count) = Self::upload(
+            &self.device,
+            &self.queue,
+            &self.translucent_vertex_buffer,
+            "chunk-translucent-vertices",
+            &mesh.translucent,
+        );
+        self.translucent_vertex_buffer = buffer;
+        self.translucent_vertex_count = count;
+    }
+
+    /// Write `vertices` into `buffer` in place if it still fits, or allocate
+    /// a new, larger buffer otherwise. Returns the buffer to keep (the same
+    /// one, or the replacement) and the vertex count to draw.
+    fn upload(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buffer: &wgpu::Buffer,
+        label: &str,
+        vertices: &[Vertex],
+    ) -> (wgpu::Buffer, u32) {
+        let bytes = bytemuck::cast_slice(vertices);
+        let buffer = if bytes.len() as wgpu::BufferAddress > buffer.size() {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytes,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            })
         } else {
-            self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
-        }
-        self.vertex_count = u32::try_from(mesh.vertices.len()).unwrap_or(u32::MAX);
+            queue.write_buffer(buffer, 0, bytes);
+            buffer.clone()
+        };
+        (buffer, u32::try_from(vertices.len()).unwrap_or(u32::MAX))
     }
 
     /// The current surface's width/height aspect ratio, for camera projection.
@@ -198,10 +260,17 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..self.vertex_count, 0..1);
+            // Same pass, same depth buffer, drawn after: water tests against
+            // the opaque/cutout geometry's depth without writing its own, so
+            // it blends against what's really there instead of its own
+            // depth write blocking another translucent surface behind it.
+            pass.set_pipeline(&self.translucent_pipeline);
+            pass.set_vertex_buffer(0, self.translucent_vertex_buffer.slice(..));
+            pass.draw(0..self.translucent_vertex_count, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(surface_texture);
@@ -253,19 +322,14 @@ fn create_atlas_texture(
     (view, sampler)
 }
 
-/// Build the (single, fixed) render pipeline and its uniform/texture bind group.
-fn create_pipeline(
+/// Build the uniform/texture bind group (and its layout) shared by both
+/// pipelines — only their depth-write state differs, never what they bind.
+fn create_bind_group(
     device: &wgpu::Device,
-    surface_format: wgpu::TextureFormat,
     uniform_buffer: &wgpu::Buffer,
     atlas_view: &wgpu::TextureView,
     atlas_sampler: &wgpu::Sampler,
-) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("chunk-shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/chunk.wgsl").into()),
-    });
-
+) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("chunk-bind-group-layout"),
         entries: &[
@@ -312,10 +376,27 @@ fn create_pipeline(
             },
         ],
     });
+    (bind_group_layout, bind_group)
+}
 
+/// Build one render pipeline against the shared bind group layout.
+/// `depth_write_enabled` is the only thing that ever differs between the
+/// opaque/cutout pipeline and the translucent one (see `Renderer`'s doc
+/// comment) — same shader, same blend state, same everything else.
+fn create_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    depth_write_enabled: bool,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chunk-shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/chunk.wgsl").into()),
+    });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("chunk-pipeline-layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
     let vertex_layout = wgpu::VertexBufferLayout {
@@ -323,8 +404,8 @@ fn create_pipeline(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &Vertex::ATTRIBUTES,
     };
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("chunk-pipeline"),
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -352,7 +433,7 @@ fn create_pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(true),
+            depth_write_enabled: Some(depth_write_enabled),
             // Layered resource models (for example grass side + tinted
             // overlay) intentionally emit coplanar quads in model order.
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
@@ -362,8 +443,7 @@ fn create_pipeline(
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
-    });
-    (pipeline, bind_group)
+    })
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

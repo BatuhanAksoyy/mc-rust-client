@@ -194,12 +194,15 @@ fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
     let chunk = chunk_with(indices);
     let mesh = mesh_chunk(&chunk, &registry, &atlas);
 
-    // Isolated in an all-air section: every face is visible (6 * 6 vertices).
-    assert_eq!(mesh.vertices.len(), 6 * 6);
+    // Isolated in an all-air section: every face is visible (6 * 6
+    // vertices), all in `translucent` (water's own separate depth-write-off
+    // pass — `Renderer`, `RENDER.md` milestone 3).
+    assert!(mesh.vertices.is_empty());
+    assert_eq!(mesh.translucent.len(), 6 * 6);
     // With no same-fluid neighbor to blend with, all 4 top corners fall back
     // to this source block's own height (8/9) — a flat top, not a slope.
     let top_heights: Vec<f32> = mesh
-        .vertices
+        .translucent
         .iter()
         .filter(|vertex| vertex.position[1] > 0.0) // Bottom-face vertices are always exactly y=0.
         .map(|v| v.position[1])
@@ -243,11 +246,12 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
     let mesh = mesh_chunk(&chunk, &registry, &atlas);
 
     // Each block's face toward the other is hidden (same fluid): 5 visible
-    // faces each, not 6.
-    assert_eq!(mesh.vertices.len(), (5 + 5) * 6);
+    // faces each, not 6 — all in `translucent`, water's own pass.
+    assert!(mesh.vertices.is_empty());
+    assert_eq!(mesh.translucent.len(), (5 + 5) * 6);
 
     let top_y_at = |x: f32| -> Vec<f32> {
-        mesh.vertices
+        mesh.translucent
             .iter()
             // Bottom-face vertices are always exactly y=0; a top vertex is
             // never that low (`own_height`'s range is 1/9..=1.0).

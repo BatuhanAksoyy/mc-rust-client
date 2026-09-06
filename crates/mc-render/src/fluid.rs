@@ -47,6 +47,15 @@ impl FluidKind {
     pub const fn tinted(self) -> bool {
         matches!(self, Self::Water)
     }
+
+    /// Whether this fluid needs the depth-write-off translucent pass
+    /// (`Mesh::translucent`): water's texture has real, non-cutout alpha
+    /// (~0.7 everywhere); lava's is fully opaque (255), so it renders
+    /// correctly through the ordinary opaque/cutout pass instead.
+    #[must_use]
+    pub const fn translucent(self) -> bool {
+        matches!(self, Self::Water)
+    }
 }
 
 /// A fluid state's `level` property (`"0"`..`"15"`).
