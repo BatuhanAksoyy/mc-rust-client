@@ -61,10 +61,11 @@ Milestones:
    `#[ignore]`d — needs the local asset/state caches): only blocks Java
    itself renders via a block-entity/BER (signs, banners, skulls, chests,
    shulker boxes, heads, decorated pots, the copper golem statue), non-model
-   blocks (air variants, fluids, light, barrier, conduit, bubble column,
-   moving piston, end portal/gateway, structure void), and one hanging-sign
-   rotation's compound (non `angle`+`axis`) element rotation stay unresolved —
-   `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for those.
+   blocks (air variants, light, barrier, conduit, bubble column, moving
+   piston, end portal/gateway, structure void — fluids are handled
+   separately, below), and one hanging-sign rotation's compound (non
+   `angle`+`axis`) element rotation stay unresolved — `mesh_chunk` falls back
+   to `BlockRegistry`'s solid debug color for those.
    Each resolved state also carries a `solid` flag (`Atlas::is_solid`),
    following the resource model's own `ambientocclusion` (vanilla sets it
    `false` on exactly the walk-through decorations — cross-shaped plants,
@@ -100,6 +101,33 @@ Milestones:
    `bush`, `potted_fern`) and `vine`/`lily_pad` are now curated (grass/foliage
    green) so they read as green instead of an unrelated per-ID hash color
    that could read as washed-out/"see-through" against real terrain.
+   Fluids (water/lava, `mesh::fluid`) have no blockstate/model JSON at all —
+   Java renders them from internal logic, not resource-pack data — so they
+   bypass `atlas::model` entirely: `fluid::level` reads the `level` property,
+   `fluid::own_height`/`corner_height` follow the fluid-height and
+   corner-blending convention long publicly documented and independently
+   reimplemented by non-Mojang tools (never decompiled source), and
+   `mesh_fluid_block` bakes a real sloped top (flat bottom, side faces
+   following the slope) instead of a flat full cube. `Atlas::fluid_uv` packs
+   the two fixed `water_still`/`lava_still` textures (their real vanilla
+   paths, unconditionally — no model ever references them) into the same
+   atlas; water is tinted with `BlockRegistry::color`'s flat blue (its
+   texture is grayscale, meant for a multiply, same as grass), lava isn't
+   (its texture already carries real color). `mc-client` also marks both
+   fluids non-solid (`build_atlas`), so a player passes through rather than
+   colliding with an invisible wall — real swimming physics (buoyancy,
+   speed, breath) is separate, later work. Animation (both textures are
+   32-frame flipbooks) and the flowing texture's directional alignment are
+   not implemented yet — only the first frame of the *still* texture is used
+   on every face, same simplification already applied to every other
+   animated texture in this atlas. Water's real alpha (baked into
+   `water_still` itself, ~0.7) blends through the single existing pipeline
+   (`renderer.rs`), which still writes depth for every draw — correct for
+   the common case (opaque ground meshed, then water above it blends
+   correctly against it), but two overlapping translucent surfaces (glass
+   behind water, water seen through water) aren't guaranteed to composite
+   right without a real depth-write-off translucent pass; not implemented
+   here as a deliberately smaller first step.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.

@@ -3,6 +3,7 @@
 
 mod app;
 pub mod atlas;
+pub mod fluid;
 pub mod mesh;
 mod renderer;
 

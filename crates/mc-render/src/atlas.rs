@@ -63,6 +63,11 @@ pub struct BakedModel {
 pub struct Atlas {
     models: HashMap<u32, BakedModel>,
     white_uv: [f32; 4],
+    /// `block/water_still`'s atlas rect, if the resource pack had it (see
+    /// [`Self::fluid_uv`]).
+    water_uv: Option<[f32; 4]>,
+    /// `block/lava_still`'s atlas rect, same fallback rule as `water_uv`.
+    lava_uv: Option<[f32; 4]>,
 }
 
 impl Atlas {
@@ -91,6 +96,16 @@ impl Atlas {
     #[must_use]
     pub fn is_opaque(&self, id: u32) -> Option<bool> {
         self.models.get(&id).map(|model| model.opaque)
+    }
+
+    /// `kind`'s still texture's atlas rect, `None` when the resource pack
+    /// didn't have it (same absent-asset fallback as everything else here).
+    #[must_use]
+    pub const fn fluid_uv(&self, kind: crate::fluid::FluidKind) -> Option<[f32; 4]> {
+        match kind {
+            crate::fluid::FluidKind::Water => self.water_uv,
+            crate::fluid::FluidKind::Lava => self.lava_uv,
+        }
     }
 
     /// A 1×1 solid-white texel's atlas rect, for tinting with a flat debug
@@ -171,6 +186,14 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
             }
         }
     }
+    // Fluids (water/lava) have no blockstate/model JSON at all (`fluid.rs`'s
+    // own doc comment) — their two textures aren't referenced by any
+    // `ModelRefs`, so pack them into the same atlas unconditionally instead.
+    for path in FLUID_TEXTURES {
+        if !unique_paths.contains(&path) {
+            unique_paths.push(path);
+        }
+    }
 
     let mut tiles: Vec<RgbaImage> = Vec::with_capacity(unique_paths.len() + 1);
     let mut tile_index: HashMap<&str, usize> = HashMap::new();
@@ -248,8 +271,16 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
         models.insert(*id, BakedModel { quads, solid: model_refs.solid, opaque });
     }
 
-    (Atlas { models, white_uv: uv_of(white_index) }, atlas_image)
+    let water_uv = tile_index.get(FLUID_TEXTURES[0]).copied().map(uv_of);
+    let lava_uv = tile_index.get(FLUID_TEXTURES[1]).copied().map(uv_of);
+    (Atlas { models, white_uv: uv_of(white_index), water_uv, lava_uv }, atlas_image)
 }
+
+/// Fixed vanilla asset paths for the two fluids' still texture (`fluid.rs`).
+/// No resource-pack data points at these — there's no model to reference
+/// them from — so `pack` loads them by this hardcoded path instead, the same
+/// way it already reserves a fixed white texel for the debug-color fallback.
+const FLUID_TEXTURES: [&str; 2] = ["block/water_still", "block/lava_still"];
 
 #[cfg(test)]
 mod tests {
@@ -321,6 +352,32 @@ mod tests {
         assert_eq!(atlas.is_opaque(1), Some(true), "a fully alpha=255 texture is opaque");
     }
 
+    /// Fluids have no blockstate/model JSON at all (`fluid.rs`), so `pack`
+    /// must load their two fixed texture paths unconditionally — not as a
+    /// side effect of resolving any block state.
+    #[test]
+    fn fluid_uv_resolves_the_fixed_texture_paths_when_present() {
+        let root = std::env::temp_dir().join(format!(
+            "mc-rust-client-atlas-fluid-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let write_texture = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            super::RgbaImage::from_pixel(16, 16, image::Rgba([180, 180, 180, 180]))
+                .save(path)
+                .unwrap();
+        };
+        write_texture("textures/block/water_still.png"); // No lava_still: exercises the `None` side too.
+
+        let (atlas, _) = Atlas::build(&root, std::iter::empty());
+        std::fs::remove_dir_all(&root).ok();
+
+        assert!(atlas.fluid_uv(crate::fluid::FluidKind::Water).is_some());
+        assert!(atlas.fluid_uv(crate::fluid::FluidKind::Lava).is_none());
+    }
+
     #[test]
     fn assets_root_is_none_without_an_extracted_client() {
         // No real extraction is expected in CI; this just exercises the
@@ -369,5 +426,15 @@ mod tests {
             let (id, _) = states.iter().find(|(_, state)| state.name.as_ref() == name).unwrap();
             assert!(atlas.lookup(*id).is_some(), "failed to bake {name}");
         }
+        // Fluids never resolve via `lookup` (no blockstate/model JSON), but
+        // the real `water_still`/`lava_still` textures should still load.
+        assert!(
+            atlas.fluid_uv(crate::fluid::FluidKind::Water).is_some(),
+            "failed to bake water_still"
+        );
+        assert!(
+            atlas.fluid_uv(crate::fluid::FluidKind::Lava).is_some(),
+            "failed to bake lava_still"
+        );
     }
 }

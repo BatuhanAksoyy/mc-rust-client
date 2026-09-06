@@ -10,6 +10,7 @@ use bytemuck::{Pod, Zeroable};
 use mc_world::{BlockRegistry, Chunk, ChunkPos};
 
 use crate::atlas::{Atlas, BakedQuad};
+use crate::fluid::{self, FluidKind};
 
 /// One mesh vertex: chunk-local position, an atlas UV, and a pre-shaded tint.
 ///
@@ -54,7 +55,7 @@ const FACES: [(i32, i32, i32, f32); 6] = [
 /// Mesh every visible face of every non-air block in `chunk`.
 ///
 /// A face is visible when its neighbor is missing (chunk edge/top/bottom —
-/// there is no neighbor chunk to consult yet) or doesn't [`occludes`] it —
+/// there is no neighbor chunk to consult yet) or doesn't `occludes` it —
 /// air, same as ever, but also any walk-through decoration (a cross-shaped
 /// plant standing on a block is non-air, but nowhere near covering that
 /// block's top face) and any solid-but-transparent block (leaves' cutout
@@ -95,6 +96,29 @@ pub fn mesh_chunks(
                         continue;
                     }
                     let block = [offset_x + x as f32, y as f32, offset_z + z as f32];
+                    if let Some(kind) = registry.state(id).and_then(FluidKind::of)
+                        && let Some(uv) = atlas.fluid_uv(kind)
+                    {
+                        let tint = if kind.tinted() { registry.color(id) } else { [1.0; 3] };
+                        mesh_fluid_block(
+                            &mut vertices,
+                            &by_position,
+                            chunk,
+                            registry,
+                            kind,
+                            x,
+                            y,
+                            z,
+                            block,
+                            uv,
+                            tint,
+                        );
+                        continue;
+                        // Else: no resource pack has `water_still`/
+                        // `lava_still` (an absent asset cache, `RENDER.md`
+                        // milestone 3) — fall through to the debug-color
+                        // path below, same as any other unresolved block.
+                    }
                     if let Some(model) = atlas.lookup(id) {
                         for quad in &model.quads {
                             let visible = quad.cull.is_none_or(|(dx, dy, dz)| {
@@ -127,6 +151,66 @@ pub fn mesh_chunks(
         }
     }
     Mesh { vertices }
+}
+
+/// Mesh one fluid block: sample the up-to-9 same-fluid neighbors `fluid`'s
+/// corner-blending and face-visibility rules need, then hand the results to
+/// `fluid::push_fluid_block`.
+#[allow(clippy::too_many_arguments)]
+fn mesh_fluid_block(
+    vertices: &mut Vec<Vertex>,
+    by_position: &HashMap<ChunkPos, &Chunk>,
+    chunk: &Chunk,
+    registry: &BlockRegistry,
+    kind: FluidKind,
+    x: i32,
+    y: i32,
+    z: i32,
+    block: [f32; 3],
+    uv: [f32; 4],
+    tint: [f32; 3],
+) {
+    // The cell at (dx, dy, dz) from this block, if it's the *same* fluid:
+    // its level, and whether that same fluid also fills the cell directly
+    // above it. `None` for a different block, air, or an unresolved
+    // chunk-edge cell — the same "only a real neighbor counts" rule
+    // `neighbor_block`'s other callers already follow.
+    let same = |dx: i32, dy: i32, dz: i32| -> Option<(u8, bool)> {
+        let id = neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)?;
+        let state = registry.state(id)?;
+        (FluidKind::of(state) == Some(kind)).then_some(())?;
+        let level = fluid::level(state);
+        let above = neighbor_block(by_position, chunk, x + dx, y + dy + 1, z + dz)
+            .and_then(|id| registry.state(id))
+            .is_some_and(|state| FluidKind::of(state) == Some(kind));
+        Some((level, above))
+    };
+    let corners = fluid::Corners {
+        nw: fluid::corner_height([same(0, 0, 0), same(-1, 0, 0), same(0, 0, -1), same(-1, 0, -1)]),
+        ne: fluid::corner_height([same(0, 0, 0), same(1, 0, 0), same(0, 0, -1), same(1, 0, -1)]),
+        se: fluid::corner_height([same(0, 0, 0), same(1, 0, 0), same(0, 0, 1), same(1, 0, 1)]),
+        sw: fluid::corner_height([same(0, 0, 0), same(-1, 0, 0), same(0, 0, 1), same(-1, 0, 1)]),
+    };
+    // A face is visible against a real, fully-covering occluder just like a
+    // solid block's own faces (`occludes`) — with one fluid-only addition:
+    // never against the *same* fluid either, since two parts of one
+    // continuous body of water/lava share no visible boundary.
+    let visible = |dx: i32, dy: i32, dz: i32| -> bool {
+        if same(dx, dy, dz).is_some() {
+            return false;
+        }
+        neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)
+            .is_none_or(|neighbor| !occludes(registry, neighbor))
+    };
+    let faces = fluid::Faces {
+        up: visible(0, 1, 0),
+        down: visible(0, -1, 0),
+        north: visible(0, 0, -1),
+        south: visible(0, 0, 1),
+        east: visible(1, 0, 0),
+        west: visible(-1, 0, 0),
+    };
+    fluid::push_fluid_block(vertices, block, corners, faces, uv, tint);
 }
 
 fn push_baked_quad(

@@ -309,8 +309,23 @@ fn build_atlas(
         &assets_root,
         state_ids.iter().copied().filter_map(|id| Some((id, registry.state(id)?))),
     );
-    let non_solid: std::collections::HashSet<u32> =
-        state_ids.iter().copied().filter(|&id| atlas.is_solid(id) == Some(false)).collect();
+    // Fluids never resolve through the atlas at all (no blockstate/model
+    // JSON describes them, `mc_render::fluid`'s own doc comment) — `is_solid`
+    // is always `None` for them, so they'd otherwise keep colliding like a
+    // full solid cube despite now rendering as a real, mostly-open fluid
+    // surface. Mark them non-solid here too, walk-through like any other
+    // decoration; real swimming physics (buoyancy, speed, breath) is a
+    // separate, later piece of Java parity, not covered by this pass.
+    let non_solid: std::collections::HashSet<u32> = state_ids
+        .iter()
+        .copied()
+        .filter(|&id| {
+            atlas.is_solid(id) == Some(false)
+                || registry
+                    .state(id)
+                    .is_some_and(|state| mc_render::fluid::FluidKind::of(state).is_some())
+        })
+        .collect();
     let non_opaque: std::collections::HashSet<u32> =
         state_ids.into_iter().filter(|&id| atlas.is_opaque(id) == Some(false)).collect();
     (atlas, image, non_solid, non_opaque)

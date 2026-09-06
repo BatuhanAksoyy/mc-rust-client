@@ -72,6 +72,15 @@ impl BlockRegistry {
         }
     }
 
+    /// Build a registry directly from an ID-indexed state list (index =
+    /// state ID), independent of the cache or JSON — like [`Self::from_names`],
+    /// but for fixtures that also need real state properties (a fluid's
+    /// `level`, an axis, ...), not just a name.
+    #[must_use]
+    pub fn from_states(states: Vec<BlockState>) -> Self {
+        Self { states: states.into(), non_solid: Arc::default(), non_opaque: Arc::default() }
+    }
+
     /// Returns this registry with `ids` additionally marked as having no
     /// collision box, regardless of [`Self::is_air`] — the resource-pack
     /// walk-through decorations (cross-shaped plants, torches, redstone
