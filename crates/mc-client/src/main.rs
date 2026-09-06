@@ -229,6 +229,12 @@ async fn run_render(
         .find(|chunk| chunk.position == origin)
         .expect("the selected origin always belongs to the chunk batch");
     let (atlas, atlas_image, non_solid_ids) = build_atlas(&chunks, &registry);
+    // Apply the atlas's resolved non-solid IDs before meshing, not after: the
+    // mesher (`mesh_chunks`) needs the same `is_solid` view collision ends up
+    // using, or a walk-through decoration (a mushroom, a flower, ...) still
+    // culls the real neighbor face standing next to or under it, exactly as
+    // if `with_non_solid` had never run (`RENDER.md` milestone 3).
+    let registry = registry.with_non_solid(non_solid_ids);
     let mesh = mc_render::mesh::mesh_chunks(&chunks, origin, &registry, &atlas);
     eprintln!(
         "Rendering {} chunks around ({}, {}): {} vertices. WASD to move, mouse to look, \
@@ -240,8 +246,7 @@ async fn run_render(
     );
     let spawn = spawn_position(origin_chunk, &registry);
     let world = mc_world::World::new(origin, chunks);
-    let game =
-        mc_client::play::RenderGame::new(world, registry.with_non_solid(non_solid_ids), spawn);
+    let game = mc_client::play::RenderGame::new(world, registry, spawn);
     match mc_render::run(mesh, atlas_image, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
