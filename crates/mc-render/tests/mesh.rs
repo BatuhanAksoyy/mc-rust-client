@@ -3,8 +3,8 @@
 
 use mc_protocol::chunk::{ChunkSection, LevelChunk, LightData, Palette, PalettedContainer};
 use mc_render::atlas::Atlas;
-use mc_render::mesh::mesh_chunk;
-use mc_world::{BlockRegistry, Chunk};
+use mc_render::mesh::{mesh_chunk, mesh_chunks};
+use mc_world::{BlockRegistry, Chunk, ChunkPos};
 
 fn registry() -> BlockRegistry {
     BlockRegistry::from_names(vec!["minecraft:air".to_owned(), "minecraft:stone".to_owned()])
@@ -45,16 +45,20 @@ fn section_from(indices: Vec<u32>) -> ChunkSection {
     }
 }
 
-fn chunk_with(indices: Vec<u32>) -> Chunk {
+fn chunk_at(position: ChunkPos, indices: Vec<u32>) -> Chunk {
     let level = LevelChunk {
-        x: 0,
-        z: 0,
+        x: position.x,
+        z: position.z,
         heightmaps: Vec::new(),
         sections: vec![section_from(indices)],
         block_entities: Vec::new(),
         light: no_light(),
     };
     Chunk::from_level(&level)
+}
+
+fn chunk_with(indices: Vec<u32>) -> Chunk {
+    chunk_at(ChunkPos { x: 0, z: 0 }, indices)
 }
 
 #[test]
@@ -103,4 +107,31 @@ fn a_fully_enclosed_block_is_never_meshed() {
     // The core is fully enclosed (0 faces); each of its 6 neighbors is
     // exposed on its other 5 sides (the 6th touches the core).
     assert_eq!(mesh.vertices.len(), 6 * 5 * 6);
+}
+
+#[test]
+fn chunk_batch_uses_positions_relative_to_the_requested_origin() {
+    let mut indices = vec![0; 4096];
+    indices[0] = 1;
+    let chunk = chunk_at(ChunkPos { x: 3, z: -1 }, indices);
+    let mesh = mesh_chunks(&[chunk], ChunkPos { x: 2, z: -2 }, &registry(), &empty_atlas());
+
+    let xs = mesh.vertices.iter().map(|vertex| vertex.position[0]);
+    let zs = mesh.vertices.iter().map(|vertex| vertex.position[2]);
+    assert_eq!(xs.clone().reduce(f32::min), Some(16.0));
+    assert_eq!(xs.reduce(f32::max), Some(17.0));
+    assert_eq!(zs.clone().reduce(f32::min), Some(16.0));
+    assert_eq!(zs.reduce(f32::max), Some(17.0));
+}
+
+#[test]
+fn chunk_batch_culls_faces_across_chunk_boundaries() {
+    let mut west = vec![0; 4096];
+    west[15] = 1; // (15, 0, 0)
+    let mut east = vec![0; 4096];
+    east[0] = 1; // (0, 0, 0)
+    let chunks = [chunk_at(ChunkPos { x: 0, z: 0 }, west), chunk_at(ChunkPos { x: 1, z: 0 }, east)];
+
+    let mesh = mesh_chunks(&chunks, ChunkPos { x: 0, z: 0 }, &registry(), &empty_atlas());
+    assert_eq!(mesh.vertices.len(), 2 * 5 * 6);
 }

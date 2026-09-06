@@ -47,7 +47,7 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// Join, take the first chunk received before spawn, and render it in a window.
+    /// Join and render the initial chunk batch in a window.
     Render {
         /// Offline server hostname or IP address.
         #[arg(default_value = "localhost")]
@@ -179,7 +179,7 @@ async fn run_local(
     }
 }
 
-/// Join, render the first received chunk, and block until the window closes.
+/// Join, render the initial received chunk batch, and block until the window closes.
 ///
 /// `mc_render::run` is a blocking, synchronous call (`winit` requires the
 /// platform's main thread on macOS); calling it here is safe only because
@@ -195,26 +195,33 @@ async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> E
                 return ExitCode::FAILURE;
             }
         };
-    let Some(level_chunk) = joined.chunks.first() else {
+    if joined.chunks.is_empty() {
         eprintln!(
             "reached spawn but received no chunk beforehand; nothing to render (try again, or a larger view distance)"
         );
         return ExitCode::FAILURE;
-    };
+    }
     let registry = mc_world::BlockRegistry::load_cached("26.2");
-    let chunk = mc_world::Chunk::from_level(level_chunk);
-    let (atlas, atlas_image) = build_atlas(&chunk, &registry);
-    let mesh = mc_render::mesh::mesh_chunk(&chunk, &registry, &atlas);
+    let chunks: Vec<_> = joined.chunks.iter().map(mc_world::Chunk::from_level).collect();
+    let origin = select_origin_chunk(&chunks, joined.spawn.x, joined.spawn.z, joined.center_chunk)
+        .expect("a nonempty chunk batch always selects an origin");
+    let collision_chunk = chunks
+        .iter()
+        .find(|chunk| chunk.position == origin)
+        .expect("the selected origin always belongs to the chunk batch")
+        .clone();
+    let (atlas, atlas_image) = build_atlas(&chunks, &registry);
+    let mesh = mc_render::mesh::mesh_chunks(&chunks, origin, &registry, &atlas);
     eprintln!(
-        "Rendering chunk ({}, {}): {} sections, {} vertices. WASD to move, mouse to look, \
+        "Rendering {} chunks around ({}, {}): {} vertices. WASD to move, mouse to look, \
          Space to jump, Shift to sneak, Ctrl to sprint. Escape or close the window to exit.",
-        chunk.position.x,
-        chunk.position.z,
-        chunk.section_count(),
+        chunks.len(),
+        origin.x,
+        origin.z,
         mesh.vertices.len()
     );
-    let spawn = spawn_position(&chunk, &registry);
-    let game = mc_client::play::RenderGame::new(chunk, registry, spawn);
+    let spawn = spawn_position(&collision_chunk, &registry);
+    let game = mc_client::play::RenderGame::new(collision_chunk, registry, spawn);
     match mc_render::run(mesh, atlas_image, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -224,25 +231,27 @@ async fn run_render(host: String, port: u16, name: String, timeout_ms: u64) -> E
     }
 }
 
-/// Resolve real block textures for every distinct block name in `chunk`
+/// Resolve real block textures for every distinct block name in `chunks`
 /// (`docs/RENDER.md` milestone 3), reading the extracted client jar's
 /// resource files from cache (`mc_render::atlas::assets_root`). Silently
 /// yields an atlas with nothing resolved when the extraction is absent —
-/// `mesh_chunk` already falls back to `registry`'s solid debug colors, same
+/// The mesher already falls back to `registry`'s solid debug colors, same
 /// as before this milestone.
 fn build_atlas(
-    chunk: &mc_world::Chunk,
+    chunks: &[mc_world::Chunk],
     registry: &mc_world::BlockRegistry,
 ) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage) {
     let mut names = std::collections::HashSet::new();
-    if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
-        for y in 0..height {
-            for z in 0..16 {
-                for x in 0..16 {
-                    if let Some(id) = chunk.block_at(x, y, z)
-                        && let Some(name) = registry.name(id)
-                    {
-                        names.insert(name);
+    for chunk in chunks {
+        if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
+            for y in 0..height {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        if let Some(id) = chunk.block_at(x, y, z)
+                            && let Some(name) = registry.name(id)
+                        {
+                            names.insert(name);
+                        }
                     }
                 }
             }
@@ -256,6 +265,34 @@ fn build_atlas(
         return mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
     };
     mc_render::atlas::Atlas::build(&assets_root, names)
+}
+
+/// Prefer the chunk containing the server-confirmed spawn, then its declared
+/// cache center, while only ever returning a chunk that was actually loaded.
+fn select_origin_chunk(
+    chunks: &[mc_world::Chunk],
+    spawn_x: f64,
+    spawn_z: f64,
+    center: Option<(i32, i32)>,
+) -> Option<mc_world::ChunkPos> {
+    let spawn = world_to_chunk(spawn_x).zip(world_to_chunk(spawn_z));
+    spawn
+        .map(|(x, z)| mc_world::ChunkPos { x, z })
+        .filter(|position| chunks.iter().any(|chunk| chunk.position == *position))
+        .or_else(|| {
+            center
+                .map(|(x, z)| mc_world::ChunkPos { x, z })
+                .filter(|position| chunks.iter().any(|chunk| chunk.position == *position))
+        })
+        .or_else(|| chunks.first().map(|chunk| chunk.position))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+// Range-checking makes the float-to-i32 conversion exact for chunk coordinates.
+fn world_to_chunk(coordinate: f64) -> Option<i32> {
+    let chunk = (coordinate / 16.0).floor();
+    (chunk.is_finite() && chunk >= f64::from(i32::MIN) && chunk <= f64::from(i32::MAX))
+        .then_some(chunk as i32)
 }
 
 /// Spawn above the chunk's center column, a few blocks over its highest

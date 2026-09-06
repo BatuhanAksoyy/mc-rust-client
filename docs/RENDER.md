@@ -36,6 +36,15 @@ Milestones:
    captured (`CursorGrabMode::Locked`, falling back to `Confined`) for FPS-style look.
    The old `camera::OrbitCamera` is gone — nothing used it once real look/move input
    landed.
+2c. **Done.** Render the complete initial chunk batch returned by `join`, positioned
+   relative to the chunk containing the server-confirmed spawn. Chunk X/Z are world
+   coordinates in 16-block units; translating them around that nearby origin keeps GPU
+   coordinates small. Cull faces across loaded chunk boundaries. If the spawn chunk was
+   not part of the pre-spawn batch, fall back to the server's chunk-cache center and then
+   the first received chunk. Player collision remains limited to the selected origin
+   chunk until the gameplay network loop and a multi-chunk world store land; the camera
+   therefore still uses a safe local spawn above that chunk rather than pretending the
+   server teleport's absolute Y is relative to the first decoded section.
 3. **Partly done.** `atlas::Atlas` resolves real block textures from a locally extracted
    client jar (`WORLD_PHYSICS_ASSETS.md`'s ASSETS section): blockstate → model → texture,
    following the `parent`/`#slot` chain generically down to one of vanilla's cube base
