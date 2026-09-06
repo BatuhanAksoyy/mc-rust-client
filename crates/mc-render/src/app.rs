@@ -82,7 +82,7 @@ pub trait Game {
 /// data first, then call this).
 pub fn run(
     mesh: Mesh,
-    atlas: image::RgbaImage,
+    atlas: Vec<image::RgbaImage>,
     title: &str,
     game: impl Game + 'static,
 ) -> Result<(), RunError> {
@@ -121,7 +121,7 @@ struct Keys {
 struct App<G: Game> {
     title: String,
     mesh: Mesh,
-    atlas: image::RgbaImage,
+    atlas: Vec<image::RgbaImage>,
     game: G,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,

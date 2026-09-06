@@ -120,11 +120,19 @@ impl Atlas {
     /// see [`assets_root`]). Names this atlas can't resolve are simply
     /// absent from `lookup` — never an error; the caller already has a
     /// solid-color fallback (`mc_world::BlockRegistry`).
+    ///
+    /// Returns a full mip chain, coarsest last (5 levels, 16×16 down to
+    /// 1×1), for
+    /// `Renderer` to upload as one mipmapped texture: a single full-res level
+    /// aliases/shimmers badly once a textured surface is more than a couple
+    /// tiles away or viewed at a grazing angle, worst of all for water's own
+    /// thin, height-varying quads (the only geometry here that ever spans
+    /// less than a full block vertically).
     #[must_use]
     pub fn build<'a>(
         assets_root: &Path,
         states: impl IntoIterator<Item = (u32, &'a BlockState)>,
-    ) -> (Self, RgbaImage) {
+    ) -> (Self, Vec<RgbaImage>) {
         let refs: HashMap<u32, ModelRefs> = states
             .into_iter()
             .filter_map(|(id, state)| Some((id, resolve_block(assets_root, state)?)))
@@ -177,7 +185,7 @@ fn texture_is_opaque(image: &RgbaImage) -> bool {
 /// `FaceRefs` paths into real atlas UV rects. A block with any face texture
 /// that fails to load (missing file — resource files are optional/partial)
 /// is dropped entirely, same as an unresolved block.
-fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage) {
+fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, Vec<RgbaImage>) {
     let mut unique_paths: Vec<&str> = Vec::new();
     for model_refs in refs.values() {
         for path in model_refs.paths() {
@@ -218,19 +226,34 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
     // so both the square root and its ceiling fit comfortably in a u32.
     let columns = f64::from(tile_count).sqrt().ceil() as u32;
     let rows = tile_count.div_ceil(columns.max(1));
-    let mut atlas_image = RgbaImage::new((columns * TILE).max(TILE), (rows * TILE).max(TILE));
-    for (index, tile) in tiles.iter().enumerate() {
-        let index = u32::try_from(index).unwrap_or(u32::MAX);
-        let (col, row) = (index % columns, index / columns);
-        image::imageops::replace(
-            &mut atlas_image,
-            tile,
-            i64::from(col * TILE),
-            i64::from(row * TILE),
-        );
-    }
 
-    let (atlas_w, atlas_h) = (atlas_image.width(), atlas_image.height());
+    // Each tile's own mip chain (16, 8, 4, 2, 1 pixels — `MIP_LEVELS`),
+    // packed into one same-layout atlas image per level: level 0 is exactly
+    // what this atlas always produced, and every coarser level reuses the
+    // same column/row placement, just at that level's tile size, so `uv_of`
+    // below needs no level-specific logic at all (a normalized UV rect maps
+    // to the matching sub-region at every level, scaled uniformly).
+    let chains: Vec<[RgbaImage; MIP_LEVELS as usize]> = tiles.iter().map(mip_chain).collect();
+    let atlas_images: Vec<RgbaImage> = (0..MIP_LEVELS)
+        .map(|level| {
+            let tile_size = TILE >> level;
+            let mut atlas_image =
+                RgbaImage::new((columns * tile_size).max(1), (rows * tile_size).max(1));
+            for (index, chain) in chains.iter().enumerate() {
+                let index = u32::try_from(index).unwrap_or(u32::MAX);
+                let (col, row) = (index % columns, index / columns);
+                image::imageops::replace(
+                    &mut atlas_image,
+                    &chain[level as usize],
+                    i64::from(col * tile_size),
+                    i64::from(row * tile_size),
+                );
+            }
+            atlas_image
+        })
+        .collect();
+
+    let (atlas_w, atlas_h) = (atlas_images[0].width(), atlas_images[0].height());
     #[allow(clippy::cast_precision_loss)] // Atlas dimensions are tiny (well under f32's limit).
     let uv_of = |index: usize| -> [f32; 4] {
         let index = u32::try_from(index).unwrap_or(u32::MAX);
@@ -273,7 +296,7 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
 
     let water_uv = tile_index.get(FLUID_TEXTURES[0]).copied().map(uv_of);
     let lava_uv = tile_index.get(FLUID_TEXTURES[1]).copied().map(uv_of);
-    (Atlas { models, white_uv: uv_of(white_index), water_uv, lava_uv }, atlas_image)
+    (Atlas { models, white_uv: uv_of(white_index), water_uv, lava_uv }, atlas_images)
 }
 
 /// Fixed vanilla asset paths for the two fluids' still texture (`fluid.rs`).
@@ -281,6 +304,46 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
 /// them from — so `pack` loads them by this hardcoded path instead, the same
 /// way it already reserves a fixed white texel for the debug-color fallback.
 const FLUID_TEXTURES: [&str; 2] = ["block/water_still", "block/lava_still"];
+
+/// `TILE`×`TILE` (16×16) down to 1×1, halving each step: 16, 8, 4, 2, 1.
+const MIP_LEVELS: u32 = 5;
+
+/// `tile`'s own mip chain, level 0 (`tile` itself, unmodified) through
+/// `MIP_LEVELS - 1` (1×1): each level is a 2×2 box-filter downsample of the
+/// one before it. Computed per tile, in isolation, before packing — not by
+/// downsampling the already-packed atlas image as a whole, which would
+/// average pixels across unrelated tiles' shared border and bleed one
+/// texture's color into its neighbor's at every mip level below the first.
+fn mip_chain(tile: &RgbaImage) -> [RgbaImage; MIP_LEVELS as usize] {
+    let mut levels = Vec::with_capacity(MIP_LEVELS as usize);
+    levels.push(tile.clone());
+    while levels.len() < MIP_LEVELS as usize {
+        levels.push(downsample(levels.last().expect("just pushed at least one level")));
+    }
+    levels.try_into().unwrap_or_else(|_: Vec<RgbaImage>| unreachable!("exactly MIP_LEVELS pushed"))
+}
+
+/// One 2×2 box-filter downsample step, halving both dimensions (rounding up,
+/// though every caller here only ever starts from a power of two). Channels
+/// are averaged directly (no premultiplied-alpha correction) — a reasonable
+/// first cut for resource-pack textures, whose only real alpha use here is
+/// water's uniform ~0.7 and leaves'/glass's fully-transparent cutout regions,
+/// neither of which has a sharp opaque/transparent edge that this would
+/// visibly fringe.
+fn downsample(image: &RgbaImage) -> RgbaImage {
+    let (width, height) = (image.width(), image.height());
+    let (out_width, out_height) = (width.div_ceil(2).max(1), height.div_ceil(2).max(1));
+    RgbaImage::from_fn(out_width, out_height, |x, y| {
+        let mut channels = [0u32; 4];
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let (sx, sy) = ((2 * x + dx).min(width - 1), (2 * y + dy).min(height - 1));
+            for (sum, sample) in channels.iter_mut().zip(image.get_pixel(sx, sy).0) {
+                *sum += u32::from(sample);
+            }
+        }
+        image::Rgba(channels.map(|sum| u8::try_from(sum / 4).unwrap_or(u8::MAX)))
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -387,9 +450,17 @@ mod tests {
 
     #[test]
     fn build_with_no_names_yields_an_empty_atlas_with_a_white_texel() {
-        let (atlas, image) = Atlas::build(Path::new("/nonexistent"), std::iter::empty());
+        let (atlas, images) = Atlas::build(Path::new("/nonexistent"), std::iter::empty());
         assert!(atlas.lookup(1).is_none());
-        assert_eq!(image.width(), image.height());
+        // A full mip chain (`MIP_LEVELS`), coarsest last; each level is
+        // square, and every level after the first is smaller than the one
+        // before it.
+        assert_eq!(images.len(), super::MIP_LEVELS as usize);
+        for pair in images.windows(2) {
+            let [level, next] = pair else { unreachable!() };
+            assert_eq!(level.width(), level.height());
+            assert!(next.width() < level.width());
+        }
         let [u0, v0, u1, v1] = atlas.white_uv();
         assert!(u1 > u0 && v1 > v0);
     }
