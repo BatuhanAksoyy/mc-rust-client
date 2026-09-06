@@ -46,6 +46,9 @@ pub struct BakedQuad {
 pub struct BakedModel {
     /// Quads from the selected variant or all matching multipart components.
     pub quads: Vec<BakedQuad>,
+    /// Whether this state has a real collision box a player is blocked by
+    /// (see [`Atlas::is_solid`]).
+    pub solid: bool,
 }
 
 /// Block name → resolved face textures.
@@ -64,6 +67,14 @@ impl Atlas {
     #[must_use]
     pub fn lookup(&self, id: u32) -> Option<&BakedModel> {
         self.models.get(&id)
+    }
+
+    /// Whether `id` has a real collision box, if this atlas resolved it —
+    /// `None` when it didn't (caller should keep its own solid-by-default
+    /// fallback, same as an unresolved texture).
+    #[must_use]
+    pub fn is_solid(&self, id: u32) -> Option<bool> {
+        self.models.get(&id).map(|model| model.solid)
     }
 
     /// A 1×1 solid-white texel's atlas rect, for tinting with a flat debug
@@ -183,7 +194,7 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
     let mut models = HashMap::with_capacity(refs.len());
     for (id, model_refs) in refs {
         let Some(quads) = model_refs
-            .0
+            .quads
             .iter()
             .map(|quad| {
                 let [u0, v0, u1, v1] = tile_index.get(quad.path.as_str()).copied().map(uv_of)?;
@@ -202,7 +213,7 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
         else {
             continue;
         };
-        models.insert(*id, BakedModel { quads });
+        models.insert(*id, BakedModel { quads, solid: model_refs.solid });
     }
 
     (Atlas { models, white_uv: uv_of(white_index) }, atlas_image)

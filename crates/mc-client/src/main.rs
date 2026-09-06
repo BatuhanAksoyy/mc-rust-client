@@ -228,7 +228,7 @@ async fn run_render(
         .iter()
         .find(|chunk| chunk.position == origin)
         .expect("the selected origin always belongs to the chunk batch");
-    let (atlas, atlas_image) = build_atlas(&chunks, &registry);
+    let (atlas, atlas_image, non_solid_ids) = build_atlas(&chunks, &registry);
     let mesh = mc_render::mesh::mesh_chunks(&chunks, origin, &registry, &atlas);
     eprintln!(
         "Rendering {} chunks around ({}, {}): {} vertices. WASD to move, mouse to look, \
@@ -240,7 +240,8 @@ async fn run_render(
     );
     let spawn = spawn_position(origin_chunk, &registry);
     let world = mc_world::World::new(origin, chunks);
-    let game = mc_client::play::RenderGame::new(world, registry, spawn);
+    let game =
+        mc_client::play::RenderGame::new(world, registry.with_non_solid(non_solid_ids), spawn);
     match mc_render::run(mesh, atlas_image, "mc-rust-client", game) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -256,10 +257,16 @@ async fn run_render(
 /// yields an atlas with nothing resolved when the extraction is absent —
 /// The mesher already falls back to `registry`'s solid debug colors, same
 /// as before this milestone.
+///
+/// The third element is every ID the atlas resolved to a walk-through model
+/// (cross-shaped plants, torches, redstone components, ...; see
+/// `mc_render::atlas::Atlas::is_solid`) — feed it to
+/// `BlockRegistry::with_non_solid` so collision matches what actually
+/// rendered instead of treating every non-air block as a full solid cube.
 fn build_atlas(
     chunks: &[mc_world::Chunk],
     registry: &mc_world::BlockRegistry,
-) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage) {
+) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage, std::collections::HashSet<u32>) {
     let mut state_ids = std::collections::HashSet::new();
     for chunk in chunks {
         if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
@@ -279,12 +286,16 @@ fn build_atlas(
             "no extracted client assets cached (see docs/WORLD_PHYSICS_ASSETS.md); \
              rendering with solid debug colors instead of real textures"
         );
-        return mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
+        let (atlas, image) =
+            mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
+        return (atlas, image, std::collections::HashSet::new());
     };
-    mc_render::atlas::Atlas::build(
+    let (atlas, image) = mc_render::atlas::Atlas::build(
         &assets_root,
-        state_ids.into_iter().filter_map(|id| Some((id, registry.state(id)?))),
-    )
+        state_ids.iter().copied().filter_map(|id| Some((id, registry.state(id)?))),
+    );
+    let non_solid = state_ids.into_iter().filter(|&id| atlas.is_solid(id) == Some(false)).collect();
+    (atlas, image, non_solid)
 }
 
 /// Prefer the chunk containing the server-confirmed spawn, then its declared

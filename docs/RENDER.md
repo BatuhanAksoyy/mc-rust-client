@@ -65,6 +65,14 @@ Milestones:
    moving piston, end portal/gateway, structure void), and one hanging-sign
    rotation's compound (non `angle`+`axis`) element rotation stay unresolved —
    `mesh_chunk` falls back to `BlockRegistry`'s solid debug color for those.
+   Each resolved state also carries a `solid` flag (`Atlas::is_solid`),
+   following the resource model's own `ambientocclusion` (vanilla sets it
+   `false` on exactly the walk-through decorations — cross-shaped plants,
+   torches, redstone components, rails, ... — and leaves it at the default
+   for structural partial shapes like fences/walls/stairs); `mc-client`
+   feeds the resolved non-solid IDs into `BlockRegistry::with_non_solid` so
+   collision matches what actually rendered instead of treating every
+   non-air block as a full solid cube.
    No mipmaps/anisotropy yet (one nearest-filtered texture, matching
    vanilla's own default sampling); lighting/fog still fixed per-face
    brightness.

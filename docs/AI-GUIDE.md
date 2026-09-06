@@ -35,7 +35,11 @@ below. Declared future-phase dependencies are added when their code lands.
 7. **Done.** `mc-client` tick loop + movement physics tests. `physics.rs` implements
    Java-Edition-matching walk/sprint/sneak speed, gravity, jump, and AABB-vs-voxel
    collision against a resolved chunk — deterministic, unit-tested without a
-   renderer or network (`WORLD_PHYSICS_ASSETS.md`).
+   renderer or network (`WORLD_PHYSICS_ASSETS.md`). `BlockRegistry::is_solid`
+   distinguishes real collision boxes from walk-through decorations (flowers,
+   torches, redstone components, ...); `mc-client render` populates it from the
+   atlas's own resolved model data (`RENDER.md` milestone 3) so the player only
+   collides with what actually renders as solid, not every non-air block.
 8. **Movement/camera and initial-view collision done; streaming still open.** `mc-client render` drives a real
    first-person camera: WASD relative to mouse-look yaw, jump/sneak/sprint, gravity,
    and collision against every chunk in the loaded initial view, at a fixed 20 TPS with render

@@ -249,7 +249,7 @@ enum Axis {
 }
 
 fn is_solid(world: &World, registry: &BlockRegistry, x: i32, y: i32, z: i32) -> bool {
-    world.block_at(x, y, z).is_some_and(|id| !registry.is_air(id))
+    world.block_at(x, y, z).is_some_and(|id| registry.is_solid(id))
 }
 
 /// Clamp `delta` (movement along `axis`, starting from `position`) so the

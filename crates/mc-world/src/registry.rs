@@ -7,7 +7,11 @@
 //! pinned server jar's own `--reports` flag — never bundled or committed,
 //! and never required: an absent cache degrades to hashed placeholder colors.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 /// One global block state, including the properties that select its resource-pack variant.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -24,6 +28,10 @@ pub struct BlockState {
 pub struct BlockRegistry {
     /// Indexed by state ID; empty when no cache was found or it failed to parse.
     states: Arc<[BlockState]>,
+    /// IDs with no collision box (see [`Self::with_non_solid`]); empty until
+    /// a caller opts in, so [`Self::is_solid`] keeps its old "solid unless
+    /// air" behavior by default.
+    non_solid: Arc<HashSet<u32>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -38,7 +46,7 @@ impl BlockRegistry {
     /// An empty registry: every ID reports no name and a hashed color.
     #[must_use]
     pub fn empty() -> Self {
-        Self { states: Arc::from(Vec::new().into_boxed_slice()) }
+        Self { states: Arc::from(Vec::new().into_boxed_slice()), non_solid: Arc::default() }
     }
 
     /// Build a registry directly from an ID-indexed name list (index = state
@@ -51,7 +59,30 @@ impl BlockRegistry {
                 .into_iter()
                 .map(|name| BlockState { name: name.into_boxed_str(), properties: BTreeMap::new() })
                 .collect(),
+            non_solid: Arc::default(),
         }
+    }
+
+    /// Returns this registry with `ids` additionally marked as having no
+    /// collision box, regardless of [`Self::is_air`] — the resource-pack
+    /// walk-through decorations (cross-shaped plants, torches, redstone
+    /// components, ...) `mc_render::atlas::Atlas` tells apart from
+    /// structural partial shapes (fences, walls, stairs) via its own
+    /// `is_solid`. IDs outside `ids` keep [`Self::is_solid`]'s old
+    /// "solid unless air" default.
+    #[must_use]
+    pub fn with_non_solid(mut self, ids: impl IntoIterator<Item = u32>) -> Self {
+        self.non_solid = Arc::new(ids.into_iter().collect());
+        self
+    }
+
+    /// Whether a player's collision box is blocked by this ID: false for air
+    /// and for any ID [`Self::with_non_solid`] marked walk-through. An ID
+    /// this registry doesn't recognize at all defaults to solid — the safer
+    /// choice, same reasoning as [`Self::is_air`].
+    #[must_use]
+    pub fn is_solid(&self, id: u32) -> bool {
+        !self.is_air(id) && !self.non_solid.contains(&id)
     }
 
     /// Load `<cache>/mc-rust-client/<version>/block-states.json`
@@ -76,7 +107,7 @@ impl BlockRegistry {
         if report.states.is_empty() {
             (!report.names.is_empty()).then(|| Self::from_names(report.names))
         } else {
-            Some(Self { states: report.states.into() })
+            Some(Self { states: report.states.into(), non_solid: Arc::default() })
         }
     }
 
@@ -204,6 +235,22 @@ mod tests {
     fn malformed_report_json_falls_back_to_none() {
         assert!(BlockRegistry::from_report_json("not json").is_none());
         assert!(BlockRegistry::from_report_json(r#"{"wrong_field":[]}"#).is_none());
+    }
+
+    #[test]
+    fn is_solid_defaults_to_true_except_air_until_ids_are_marked_non_solid() {
+        let registry = BlockRegistry::from_names(vec![
+            "minecraft:air".into(),
+            "minecraft:stone".into(),
+            "minecraft:short_grass".into(),
+        ]);
+        assert!(!registry.is_solid(0)); // Air.
+        assert!(registry.is_solid(1)); // Solid unless marked otherwise.
+        assert!(registry.is_solid(2)); // Not yet marked non-solid.
+        let registry = registry.with_non_solid([2]);
+        assert!(registry.is_solid(1)); // Unaffected.
+        assert!(!registry.is_solid(2)); // Now walk-through.
+        assert!(!registry.is_solid(0)); // Air stays non-solid either way.
     }
 
     #[test]

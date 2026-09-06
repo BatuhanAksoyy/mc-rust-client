@@ -17,11 +17,22 @@ pub(super) struct QuadRef {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct ModelRefs(pub Vec<QuadRef>);
+pub(super) struct ModelRefs {
+    pub quads: Vec<QuadRef>,
+    /// Whether this state has a real collision box. Follows the resolved
+    /// model's own `ambientocclusion` flag (defaults `true`): vanilla's base
+    /// templates for cross-shaped plants, torches, redstone components and
+    /// similar walk-through decorations all set it `false`, since ambient
+    /// occlusion baking only makes sense for a shape that actually occludes
+    /// light — the same shapes a player passes straight through. Structural
+    /// partial shapes (fences, walls, stairs, slabs) leave it at the
+    /// default, so they keep colliding.
+    pub solid: bool,
+}
 
 impl ModelRefs {
     pub fn paths(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|quad| quad.path.as_str())
+        self.quads.iter().map(|quad| quad.path.as_str())
     }
 }
 
@@ -71,10 +82,18 @@ impl Direction {
     }
 }
 
-#[derive(Default)]
 struct Model {
     textures: HashMap<String, String>,
     elements: Vec<serde_json::Value>,
+    /// Mirrors the resource model's `ambientocclusion` (default `true`),
+    /// inherited down the `parent` chain unless a link overrides it.
+    ambient_occlusion: bool,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self { textures: HashMap::new(), elements: Vec::new(), ambient_occlusion: true }
+    }
 }
 
 pub(super) fn resolve_block(assets_root: &Path, state: &BlockState) -> Option<ModelRefs> {
@@ -82,13 +101,15 @@ pub(super) fn resolve_block(assets_root: &Path, state: &BlockState) -> Option<Mo
     let blockstate = read_json(&assets_root.join("blockstates").join(format!("{short}.json")))?;
     let applications = select_applications(&blockstate, state)?;
     let mut output = Vec::new();
+    let mut solid = true;
     for application in applications {
         let model = resolve_model(assets_root, &application.model, 0)?;
+        solid &= model.ambient_occlusion;
         for element in &model.elements {
             bake_element(element, &model.textures, &application, &mut output)?;
         }
     }
-    (!output.is_empty()).then_some(ModelRefs(output))
+    (!output.is_empty()).then_some(ModelRefs { quads: output, solid })
 }
 
 fn angle(value: Option<&serde_json::Value>) -> Option<u16> {
@@ -108,6 +129,11 @@ fn resolve_model(assets_root: &Path, reference: &str, depth: usize) -> Option<Mo
         Some(parent) => resolve_model(assets_root, parent, depth + 1)?,
         None => Model::default(),
     };
+    if let Some(ambient_occlusion) =
+        value.get("ambientocclusion").and_then(serde_json::Value::as_bool)
+    {
+        model.ambient_occlusion = ambient_occlusion;
+    }
     if let Some(textures) = value.get("textures").and_then(serde_json::Value::as_object) {
         for (name, value) in textures {
             let texture = value.as_str().or_else(|| value.get("sprite")?.as_str())?;
@@ -334,7 +360,9 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, default_uv};
+    use super::{Direction, default_uv, resolve_block};
+    use mc_world::BlockState;
+    use std::collections::BTreeMap;
 
     #[test]
     #[allow(clippy::float_cmp)] // Values are exactly representable binary fractions.
@@ -343,5 +371,49 @@ mod tests {
             default_uv(Direction::South, [0.25, 0.5, 0.0], [0.75, 1.0, 1.0]),
             [4.0, 0.0, 12.0, 8.0]
         );
+    }
+
+    /// A state's collision follows its resolved model's own
+    /// `ambientocclusion` flag (default `true`, inherited down `parent`
+    /// unless overridden) — the same flag vanilla's base templates for
+    /// walk-through decorations (cross-shaped plants, torches, redstone
+    /// components, ...) set `false`, and structural partial shapes leave at
+    /// the default so they keep colliding.
+    #[test]
+    fn solid_follows_the_resolved_models_ambient_occlusion_flag() {
+        let root = std::env::temp_dir().join(format!(
+            "mc-rust-client-model-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let write = |relative: &str, contents: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        };
+        write(
+            "models/block/base_cross.json",
+            r##"{"ambientocclusion":false,"elements":[{"from":[0,0,0],"to":[16,16,0],
+               "faces":{"north":{"texture":"#cross"}}}]}"##,
+        );
+        write(
+            "models/block/test_cross.json",
+            r#"{"parent":"block/base_cross","textures":{"cross":"block/test_cross"}}"#,
+        );
+        write("blockstates/test_cross.json", r#"{"variants":{"":{"model":"block/test_cross"}}}"#);
+        write(
+            "models/block/test_cube.json",
+            r##"{"textures":{"all":"block/test_cube"},
+               "elements":[{"from":[0,0,0],"to":[16,16,16],
+               "faces":{"north":{"texture":"#all"}}}]}"##,
+        );
+        write("blockstates/test_cube.json", r#"{"variants":{"":{"model":"block/test_cube"}}}"#);
+
+        let state = |name: &str| BlockState { name: name.into(), properties: BTreeMap::new() };
+        let cross = resolve_block(&root, &state("test_cross")).unwrap();
+        let cube = resolve_block(&root, &state("test_cube")).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        assert!(!cross.solid, "a cross-model state should have no collision box");
+        assert!(cube.solid, "a plain cube model should keep its default collision box");
     }
 }
