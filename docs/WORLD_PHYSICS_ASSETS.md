@@ -47,26 +47,32 @@ PY
   owns no wall clock, and never sleeps. This policy is tested separately from
   future movement/physics parity. See `FOUNDATION.md`.
 - **Done.** `physics.rs` implements `PlayerController::tick` from publicly documented
-  per-tick constants and order (`minecraft.wiki`'s "Entity" article, cross-checked
-  against `mcpk.wiki`'s Vertical/Horizontal Movement Formulas pages) — never from
-  decompiling `client.jar` (forbidden by this file's own clean-room policy above;
-  the cached jar is compiled bytecode we use only for its legitimate resource
-  assets and, via the paired `server.jar`, the official `--reports` data generator).
+  per-tick constants and order — `minecraft.wiki`'s "Entity" article for the vertical
+  recurrence, `prismarine-physics` (MIT-licensed, independently reimplemented from
+  observed behavior for the Mineflayer bot ecosystem) for the exact horizontal
+  constants and order — never from decompiling `client.jar` (forbidden by this
+  file's own clean-room policy above; the cached jar is compiled bytecode we use
+  only for its legitimate resource assets and, via the paired `server.jar`, the
+  official `--reports` data generator).
   Walk 4.317 blocks/s, sprint 5.612, sneak 1.31, jump vY 0.42, gravity 0.08/tick,
   vertical drag 0.98/tick, horizontal drag 0.91 air / 0.546 ground (0.91 × default
-  0.6 block friction). The order matters and is easy to get backwards: a living
-  entity moves *first* using the velocity carried over from the previous tick, then
-  updates velocity (gravity, or ground/air acceleration toward walk/sprint/sneak
-  speed) for the *next* tick's move; a jump unconditionally overrides the carried
-  velocity so its tick moves the full, undecayed 0.42 — applying gravity/drag before
-  that first move (the original bug here) understates jump apex height by about a
-  third (0.83 vs. the correct, vanilla-matching ~1.2523 blocks — regression-tested).
-  Horizontal ground/air acceleration matches vanilla's per-tick constants but not
-  its slipperiness-cubed friction formula for non-default-friction blocks; ice, soul
-  sand, water, ladders and slime bounce are not modeled yet. Collision is discrete
-  AABB-vs-voxel against one resolved `mc_world::Chunk` (no continuous sweep, no
-  cross-chunk collision — both are fine at this milestone's single-chunk scope,
-  `AI-GUIDE.md` step 8). Fully unit-tested without a renderer or network.
+  0.6 block friction). Vertical and horizontal deliberately run in *opposite*
+  per-tick orders, matching vanilla: vertical moves first using velocity carried
+  over from the previous tick, then updates it (gravity) for next tick — a jump
+  unconditionally overrides the carried velocity, so its tick moves the full,
+  undecayed 0.42 (applying gravity/drag before that first move, the module's
+  original bug, understated jump apex height by about a third: 0.83 vs. the
+  correct, vanilla-matching ~1.2523 blocks — regression-tested). Horizontal adds
+  this tick's ground/air acceleration *before* moving and applies drag *after*;
+  each ground acceleration constant is solved from `a = v(1-r)/r` (not the simpler
+  `a = v(1-r)`, which belongs to the other order and would reach the same top speed
+  but visibly slower) so it still reaches exactly its documented top speed. Matches
+  vanilla's per-tick constants but not its slipperiness-cubed friction formula for
+  non-default-friction blocks; ice, soul sand, water, ladders and slime bounce are
+  not modeled yet. Collision is discrete AABB-vs-voxel against one resolved
+  `mc_world::Chunk` (no continuous sweep, no cross-chunk collision — both are fine
+  at this milestone's single-chunk scope, `AI-GUIDE.md` step 8). Fully unit-tested
+  without a renderer or network.
 - `play.rs` is the `mc_render::Game` impl driving this at 20 TPS from `TickScheduler`,
   applying mouse-look every frame (not gated by the tick, matching vanilla) and
   lerping the camera between the previous/current tick's position by `alpha`.

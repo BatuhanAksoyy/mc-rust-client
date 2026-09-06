@@ -7,24 +7,38 @@
 //! smooth rendering.
 //!
 //! This reproduces vanilla Java Edition's *feel* — walk/sprint/sneak speed,
-//! jump height, gravity, and solid-block collision — from publicly documented
-//! per-tick constants and update order (`minecraft.wiki`'s "Entity" article;
-//! exact recurrence cross-checked against `mcpk.wiki`'s Vertical/Horizontal
-//! Movement Formulas pages), never from decompiling Mojang's bytecode
-//! (forbidden by this project's own clean-room policy, `AI-GUIDE.md`).
+//! jump height, gravity, and solid-block collision — from publicly
+//! documented per-tick constants and update order, never from decompiling
+//! Mojang's bytecode (forbidden by this project's own clean-room policy,
+//! `AI-GUIDE.md`). Sources: `minecraft.wiki`'s "Entity" article for the
+//! vertical recurrence, and `prismarine-physics`
+//! (<https://github.com/PrismarineJS/prismarine-physics>, MIT-licensed,
+//! independently reimplemented from observed behavior for the Mineflayer
+//! bot ecosystem — not Mojang code) for the exact horizontal constants and
+//! update order, cross-checked against known real walk/sprint speeds.
 //!
-//! The crucial, easy-to-get-backwards detail: for a living entity, each tick
-//! **moves first using the velocity carried over from the previous tick,
-//! then applies gravity, then applies drag** — the freshly updated velocity
-//! only takes effect starting *next* tick. A jump's `JUMP_VELOCITY` is an
-//! unconditional override of that carried-over value, so the tick you jump
-//! moves you the *full, undecayed* 0.42 blocks — gravity/drag only start
-//! eating into it from the following tick. Applying gravity/drag before that
-//! first move (this module's original bug) shaves off roughly a third of
-//! the jump's apex height. Ice, water, ladders, and slime bounce are not
-//! modeled yet; ground/air horizontal acceleration matches vanilla's
-//! per-tick constants but not its slipperiness-cubed friction formula for
-//! non-default-friction blocks.
+//! Two easy-to-get-backwards ordering details, both confirmed against those
+//! sources:
+//!
+//! - **Vertical**: each tick moves first using the velocity carried over
+//!   from the previous tick, *then* applies gravity, *then* drag — the
+//!   freshly updated velocity only takes effect next tick. A jump's
+//!   `JUMP_VELOCITY` unconditionally overrides the carried-over value, so
+//!   the tick you jump moves you the full, undecayed 0.42 blocks; gravity
+//!   only starts eating into it the tick after. Getting this backwards (this
+//!   module's original bug) shaves roughly a third off the jump's apex
+//!   height.
+//! - **Horizontal**: the opposite order — this tick's input acceleration is
+//!   added *before* moving, and drag is applied *after*, for next tick. Each
+//!   ground acceleration constant is solved from `a = v * (1 - r) / r` so it
+//!   still reaches exactly the documented walk/sprint/sneak speed at
+//!   equilibrium against that order (a naive `a = v * (1 - r)`, matching the
+//!   *other* order, undershoots top speed's ramp-up and feels sluggish to
+//!   accelerate even though it eventually reaches the right top speed).
+//!
+//! Ice, water, ladders, and slime bounce are not modeled yet; ground/air
+//! horizontal acceleration matches vanilla's per-tick constants but not its
+//! slipperiness-cubed friction formula for non-default-friction blocks.
 //!
 //! Collision is AABB vs. a single resolved chunk's voxel grid
 //! (`mc_world::Chunk`); coordinates are chunk-local, matching `mc_render::mesh`
@@ -71,13 +85,17 @@ pub mod constants {
     /// Per-tick ground acceleration that reaches exactly [`WALK_SPEED`] at
     /// equilibrium against [`GROUND_DRAG`].
     ///
-    /// `a = v * (1 - r)`, the same relation vanilla's own wiki uses to
-    /// explain its walking constant (`0.098`, which this evaluates to).
-    pub const WALK_ACCEL: f32 = WALK_SPEED * (1.0 - GROUND_DRAG);
+    /// Solved for this module's accel-before-move-before-drag order:
+    /// `a = v(1-r)/r`.
+    ///
+    /// The simpler `a = v(1-r)` form belongs to the *other* order — accel
+    /// added after drag — and would still reach the right top speed here,
+    /// just via a visibly slower ramp-up.
+    pub const WALK_ACCEL: f32 = WALK_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
     /// Same relation, for [`SPRINT_SPEED`].
-    pub const SPRINT_ACCEL: f32 = SPRINT_SPEED * (1.0 - GROUND_DRAG);
+    pub const SPRINT_ACCEL: f32 = SPRINT_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
     /// Same relation, for [`SNEAK_SPEED`].
-    pub const SNEAK_ACCEL: f32 = SNEAK_SPEED * (1.0 - GROUND_DRAG);
+    pub const SNEAK_ACCEL: f32 = SNEAK_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
 }
 
 /// One tick's movement intent, decoupled from any specific input backend
@@ -130,17 +148,21 @@ impl PlayerController {
         self.position + Vec3::new(0.0, constants::EYE_HEIGHT, 0.0)
     }
 
-    /// Advance one fixed 20 TPS tick, in vanilla's real order: move by the
-    /// velocity carried over from the previous tick (a jump overrides it
-    /// first), resolve collisions, then update velocity — input
-    /// acceleration, gravity, drag — for the *next* tick's move. See the
-    /// module doc's ordering note for why this direction matters.
+    /// Advance one fixed 20 TPS tick.
+    ///
+    /// Vertical and horizontal run in opposite orders (see the module doc):
+    /// a jump overrides carried-over Y velocity, then the move uses that
+    /// (still un-decayed) value, with gravity/drag updating it only for next
+    /// tick. Horizontal is the reverse — this tick's input acceleration is
+    /// added first, *then* the (now-updated) velocity moves the player, and
+    /// drag is applied after, for next tick. Both the acceleration and the
+    /// drag factor used this tick are picked once, from the on-ground state
+    /// as it stands entering the tick (last tick's result) — not
+    /// re-evaluated after this tick's own collision changes it.
     pub fn tick(&mut self, input: Input, chunk: &Chunk, registry: &BlockRegistry) {
         if input.jump && self.on_ground {
             self.velocity.y = constants::JUMP_VELOCITY;
         }
-        self.on_ground = false;
-        self.move_and_collide(chunk, registry);
 
         let mut wish = Vec3::ZERO;
         if input.forward {
@@ -162,34 +184,28 @@ impl PlayerController {
         let direction =
             Vec3::new(wish.z.mul_add(-sin, wish.x * cos), 0.0, wish.z.mul_add(cos, wish.x * sin));
 
-        let accel = if self.on_ground {
-            if input.sneak {
+        let (accel, horizontal_drag) = if self.on_ground {
+            let accel = if input.sneak {
                 constants::SNEAK_ACCEL
             } else if input.sprint {
                 constants::SPRINT_ACCEL
             } else {
                 constants::WALK_ACCEL
-            }
+            };
+            (accel, constants::GROUND_DRAG)
         } else {
-            constants::AIR_ACCEL
+            (constants::AIR_ACCEL, constants::AIR_DRAG)
         };
-        // Horizontal: drag first (on last tick's stored velocity), *then*
-        // add this tick's acceleration — the order that actually solves to
-        // vanilla's quoted terminal-velocity relation `v = a / (1 - drag)`.
-        // Vertical is the other way around (gravity/accel, then drag): its
-        // order is fixed independently by the jump-height recurrence in the
-        // module doc, and vanilla itself applies gravity and friction
-        // through unrelated code paths, so there's no reason to expect them
-        // to share an order.
-        let horizontal_drag =
-            if self.on_ground { constants::GROUND_DRAG } else { constants::AIR_DRAG };
-        self.velocity.x *= horizontal_drag;
-        self.velocity.z *= horizontal_drag;
         self.velocity.x = direction.x.mul_add(accel, self.velocity.x);
         self.velocity.z = direction.z.mul_add(accel, self.velocity.z);
 
+        self.on_ground = false;
+        self.move_and_collide(chunk, registry);
+
         self.velocity.y -= constants::GRAVITY;
         self.velocity.y *= constants::VERTICAL_DRAG;
+        self.velocity.x *= horizontal_drag;
+        self.velocity.z *= horizontal_drag;
     }
 
     fn move_and_collide(&mut self, chunk: &Chunk, registry: &BlockRegistry) {
@@ -471,7 +487,12 @@ mod tests {
         let mut player = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
         let chunk = floor_chunk();
         let registry = registry();
-        for _ in 0..40 {
+        // 20 ticks, not more: past that the player would walk off the edge
+        // of this test's one loaded chunk (spawned at z=8, chunk covers
+        // z in 0..16) and lose ground contact there, which is correct given
+        // the single-chunk collision scope (module doc) but would no longer
+        // be exercising steady per-tick ground acceleration.
+        for _ in 0..20 {
             player.tick(Input { forward: true, ..still(0.0) }, &chunk, &registry);
         }
         assert!(player.velocity.z < 0.0);
