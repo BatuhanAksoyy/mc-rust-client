@@ -72,12 +72,24 @@ Milestones:
    for structural partial shapes like fences/walls/stairs); `mc-client`
    feeds the resolved non-solid IDs into `BlockRegistry::with_non_solid` so
    collision matches what actually rendered instead of treating every
-   non-air block as a full solid cube. `mesh_chunk`'s own neighbor-face
-   culling (`mesh.rs`) follows the same flag rather than `is_air` alone: a
+   non-air block as a full solid cube. Each resolved state also carries an
+   `opaque` flag (`Atlas::is_opaque`), independent of `solid`: read directly
+   off the resource pack's own texture pixels (fully alpha-255 or not), not
+   from any model flag, since solidity and texture transparency are
+   unrelated in Java (leaves and glass are full cubes with a real collision
+   box — `solid` — whose texture still has alpha gaps or blend — not
+   `opaque`). `mesh_chunk`'s own neighbor-face culling (`mesh.rs`'s
+   `occludes`) requires *both* flags rather than `is_air` alone: a
    cross-shaped decoration is non-air but covers almost none of a
-   neighboring face, so a solid block standing next to or under one (a
-   mushroom, a flower, tall grass, ...) keeps that face instead of having it
-   culled away as if the decoration were a real occluder.
+   neighboring face (fails `solid`), and leaves/glass are solid full cubes
+   but don't fully cover the face either (fail `opaque`) — either way, a
+   block standing next to or under one (a mushroom, a flower, tall grass, a
+   log behind leaves, ...) keeps that face instead of having it culled away
+   as if the neighbor were a real, fully-covering occluder. `mc-client`
+   feeds both resolved ID sets into `BlockRegistry` (`with_non_solid` and
+   `with_non_opaque`) *before* meshing, not just before physics — the mesher
+   needs the same view collision uses, or the fix has no effect on what's
+   actually drawn.
    No mipmaps/anisotropy yet (one nearest-filtered texture, matching
    vanilla's own default sampling); lighting/fog still fixed per-face
    brightness.

@@ -49,6 +49,9 @@ pub struct BakedModel {
     /// Whether this state has a real collision box a player is blocked by
     /// (see [`Atlas::is_solid`]).
     pub solid: bool,
+    /// Whether every texture this state uses is fully opaque (see
+    /// [`Atlas::is_opaque`]).
+    pub opaque: bool,
 }
 
 /// Block name → resolved face textures.
@@ -75,6 +78,19 @@ impl Atlas {
     #[must_use]
     pub fn is_solid(&self, id: u32) -> Option<bool> {
         self.models.get(&id).map(|model| model.solid)
+    }
+
+    /// Whether every texture `id` resolved to is fully opaque, if this atlas
+    /// resolved it — `None` when it didn't, same fallback rule as
+    /// [`Self::is_solid`]. A block can be solid (has a collision box) and
+    /// still not opaque: leaves and glass are full cubes a player collides
+    /// with, but their textures have real alpha gaps (leaves' cutout,
+    /// glass's transparency), so a neighbor sitting behind one should still
+    /// render its shared face instead of being culled as if the leaves/glass
+    /// were a real, fully-covering occluder.
+    #[must_use]
+    pub fn is_opaque(&self, id: u32) -> Option<bool> {
+        self.models.get(&id).map(|model| model.opaque)
     }
 
     /// A 1×1 solid-white texel's atlas rect, for tinting with a flat debug
@@ -133,6 +149,13 @@ fn load_first_frame(path: &Path) -> Option<RgbaImage> {
     Some(image::imageops::crop_imm(&image, 0, 0, TILE, TILE).to_image())
 }
 
+/// Whether every pixel in `image` is fully opaque (alpha 255) — a plain
+/// stone/dirt-style texture, versus a cutout (leaves, saplings) or
+/// translucent (glass, ice) one with real alpha variation.
+fn texture_is_opaque(image: &RgbaImage) -> bool {
+    image.pixels().all(|pixel| pixel.0[3] == 255)
+}
+
 /// Load every texture `refs` points to (deduplicated — most blocks reuse a
 /// handful of the same textures across faces), lay them out in a fixed-tile
 /// grid plus one reserved white texel, and resolve each block's six
@@ -157,6 +180,12 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
             tiles.push(image);
         }
     }
+    // Whether each loaded tile is fully opaque (no pixel with alpha < 255) —
+    // read straight off the resource pack's own texture data, the same
+    // signal Java's block-render-layer assignment (opaque/cutout/translucent)
+    // ultimately reflects, without needing that assignment itself (compiled
+    // into the Java client, not resource-pack data we can read).
+    let tile_opaque: Vec<bool> = tiles.iter().map(texture_is_opaque).collect();
     let white_index = tiles.len();
     tiles.push(RgbaImage::from_pixel(TILE, TILE, image::Rgba([255, 255, 255, 255])));
 
@@ -193,11 +222,14 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
 
     let mut models = HashMap::with_capacity(refs.len());
     for (id, model_refs) in refs {
+        let mut opaque = true;
         let Some(quads) = model_refs
             .quads
             .iter()
             .map(|quad| {
-                let [u0, v0, u1, v1] = tile_index.get(quad.path.as_str()).copied().map(uv_of)?;
+                let index = *tile_index.get(quad.path.as_str())?;
+                opaque &= tile_opaque[index];
+                let [u0, v0, u1, v1] = uv_of(index);
                 let uv = quad.uv.map(|[u, v]| {
                     [(u / 16.0).mul_add(u1 - u0, u0), (v / 16.0).mul_add(v1 - v0, v0)]
                 });
@@ -213,7 +245,7 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
         else {
             continue;
         };
-        models.insert(*id, BakedModel { quads, solid: model_refs.solid });
+        models.insert(*id, BakedModel { quads, solid: model_refs.solid, opaque });
     }
 
     (Atlas { models, white_uv: uv_of(white_index) }, atlas_image)
@@ -223,9 +255,71 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
 mod tests {
     use std::path::Path;
 
-    use mc_world::BlockRegistry;
+    use mc_world::{BlockRegistry, BlockState};
 
     use super::Atlas;
+
+    /// A block's collision shape (`Atlas::is_solid`) and its texture's alpha
+    /// (`Atlas::is_opaque`) are independent: a full cube with a cutout
+    /// texture (leaves, in effect) is solid but not opaque, and should not
+    /// be conflated with a plain fully-opaque cube of the same shape.
+    #[test]
+    fn is_opaque_reflects_the_textures_actual_alpha_not_the_models_shape() {
+        let root = std::env::temp_dir().join(format!(
+            "mc-rust-client-atlas-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let write_json = |relative: &str, contents: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        };
+        let write_texture = |relative: &str, image: &super::RgbaImage| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            image.save(path).unwrap();
+        };
+        let full_cube = r##"{"textures":{"all":"block/#NAME#"},
+            "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#all"}}}]}"##;
+
+        write_json("models/block/test_cutout.json", &full_cube.replace("#NAME#", "test_cutout"));
+        write_json(
+            "blockstates/test_cutout.json",
+            r#"{"variants":{"":{"model":"block/test_cutout"}}}"#,
+        );
+        let mut cutout = super::RgbaImage::from_pixel(16, 16, image::Rgba([0, 200, 0, 255]));
+        cutout.put_pixel(0, 0, image::Rgba([0, 0, 0, 0])); // One transparent texel: a real cutout gap.
+        write_texture("textures/block/test_cutout.png", &cutout);
+
+        write_json("models/block/test_opaque.json", &full_cube.replace("#NAME#", "test_opaque"));
+        write_json(
+            "blockstates/test_opaque.json",
+            r#"{"variants":{"":{"model":"block/test_opaque"}}}"#,
+        );
+        let opaque = super::RgbaImage::from_pixel(16, 16, image::Rgba([120, 90, 60, 255]));
+        write_texture("textures/block/test_opaque.png", &opaque);
+
+        let states = [
+            BlockState {
+                name: "test_cutout".into(),
+                properties: std::collections::BTreeMap::new(),
+            },
+            BlockState {
+                name: "test_opaque".into(),
+                properties: std::collections::BTreeMap::new(),
+            },
+        ];
+        let (atlas, _) = Atlas::build(&root, [(0, &states[0]), (1, &states[1])]);
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(
+            atlas.is_opaque(0),
+            Some(false),
+            "a texture with any alpha<255 pixel isn't opaque"
+        );
+        assert_eq!(atlas.is_opaque(1), Some(true), "a fully alpha=255 texture is opaque");
+    }
 
     #[test]
     fn assets_root_is_none_without_an_extracted_client() {

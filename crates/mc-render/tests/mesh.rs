@@ -28,15 +28,15 @@ const fn no_light() -> LightData {
 }
 
 /// One section with every entry set from `indices` (palette `[air, stone,
-/// short_grass]` — only the first two are used outside this file's own
-/// non-solid-neighbor test).
+/// short_grass, oak_leaves]` — only the first two are used outside this
+/// file's own non-solid/non-opaque-neighbor tests).
 fn section_from(indices: Vec<u32>) -> ChunkSection {
     ChunkSection {
         block_count: 0,
         fluid_count: 0,
         block_states: PalettedContainer {
             bits_per_entry: 4,
-            palette: Palette::Indirect(vec![0, 1, 2]),
+            palette: Palette::Indirect(vec![0, 1, 2, 3]),
             indices,
         },
         biomes: PalettedContainer {
@@ -134,6 +134,33 @@ fn a_non_solid_neighbor_does_not_hide_the_solid_face_beside_it() {
     // Stone keeps all 6 faces (its "up" neighbor doesn't occlude); the
     // decoration keeps 5 (its "down" face is still hidden by the real, solid
     // stone beneath it).
+    assert_eq!(mesh.vertices.len(), (6 + 5) * 6);
+}
+
+#[test]
+fn a_solid_but_non_opaque_neighbor_does_not_hide_the_solid_face_beside_it() {
+    // Stone at (0,0,0), a solid-but-transparent block (`with_non_opaque`,
+    // standing in for leaves — a real full cube, but with a cutout texture)
+    // directly above it at (0,1,0). Before `is_opaque` existed, culling on
+    // `is_solid` alone treated any solid neighbor as a full occluder — a log
+    // (or, here, stone) standing right next to leaves would have its shared
+    // face hidden as if the leaves were plain opaque wood, even though the
+    // leaves' real texture has alpha gaps a player can see straight through.
+    let registry = BlockRegistry::from_names(vec![
+        "minecraft:air".to_owned(),
+        "minecraft:stone".to_owned(),
+        "minecraft:short_grass".to_owned(),
+        "minecraft:oak_leaves".to_owned(),
+    ])
+    .with_non_opaque([3]);
+    let mut indices = vec![0; 4096];
+    indices[0] = 1; // stone at (0,0,0)
+    indices[256] = 3; // oak_leaves at (0,1,0): (y*16+z)*16+x = (1*16+0)*16+0.
+    let chunk = chunk_with(indices);
+    let mesh = mesh_chunk(&chunk, &registry, &empty_atlas());
+    // Stone keeps all 6 faces (its "up" neighbor is solid but doesn't fully
+    // occlude); the leaves keep only 5 (its "down" face is still hidden by
+    // the real, solid *and* opaque stone beneath it).
     assert_eq!(mesh.vertices.len(), (6 + 5) * 6);
 }
 

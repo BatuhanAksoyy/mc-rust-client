@@ -228,13 +228,15 @@ async fn run_render(
         .iter()
         .find(|chunk| chunk.position == origin)
         .expect("the selected origin always belongs to the chunk batch");
-    let (atlas, atlas_image, non_solid_ids) = build_atlas(&chunks, &registry);
-    // Apply the atlas's resolved non-solid IDs before meshing, not after: the
-    // mesher (`mesh_chunks`) needs the same `is_solid` view collision ends up
-    // using, or a walk-through decoration (a mushroom, a flower, ...) still
-    // culls the real neighbor face standing next to or under it, exactly as
-    // if `with_non_solid` had never run (`RENDER.md` milestone 3).
-    let registry = registry.with_non_solid(non_solid_ids);
+    let (atlas, atlas_image, non_solid_ids, non_opaque_ids) = build_atlas(&chunks, &registry);
+    // Apply the atlas's resolved non-solid/non-opaque IDs before meshing, not
+    // after: the mesher (`mesh_chunks`) needs the same `is_solid`/`is_opaque`
+    // view collision ends up using, or a walk-through decoration (a
+    // mushroom, a flower, ...) or a solid-but-transparent block (leaves,
+    // glass) still culls the real neighbor face next to it, exactly as if
+    // `with_non_solid`/`with_non_opaque` had never run (`RENDER.md`
+    // milestone 3).
+    let registry = registry.with_non_solid(non_solid_ids).with_non_opaque(non_opaque_ids);
     let mesh = mc_render::mesh::mesh_chunks(&chunks, origin, &registry, &atlas);
     eprintln!(
         "Rendering {} chunks around ({}, {}): {} vertices. WASD to move, mouse to look, \
@@ -263,15 +265,23 @@ async fn run_render(
 /// The mesher already falls back to `registry`'s solid debug colors, same
 /// as before this milestone.
 ///
-/// The third element is every ID the atlas resolved to a walk-through model
-/// (cross-shaped plants, torches, redstone components, ...; see
-/// `mc_render::atlas::Atlas::is_solid`) — feed it to
-/// `BlockRegistry::with_non_solid` so collision matches what actually
-/// rendered instead of treating every non-air block as a full solid cube.
+/// The third and fourth elements are every ID the atlas resolved to,
+/// respectively, a walk-through model (cross-shaped plants, torches,
+/// redstone components, ...; see `mc_render::atlas::Atlas::is_solid`) and a
+/// texture with real alpha variation (leaves' cutout gaps, glass; see
+/// `Atlas::is_opaque`) — feed them to `BlockRegistry::with_non_solid` and
+/// `with_non_opaque` so collision and face culling both match what actually
+/// rendered, instead of treating every non-air block as a fully occluding
+/// solid cube.
 fn build_atlas(
     chunks: &[mc_world::Chunk],
     registry: &mc_world::BlockRegistry,
-) -> (mc_render::atlas::Atlas, mc_render::atlas::RgbaImage, std::collections::HashSet<u32>) {
+) -> (
+    mc_render::atlas::Atlas,
+    mc_render::atlas::RgbaImage,
+    std::collections::HashSet<u32>,
+    std::collections::HashSet<u32>,
+) {
     let mut state_ids = std::collections::HashSet::new();
     for chunk in chunks {
         if let Ok(height) = i32::try_from(chunk.section_count() * 16) {
@@ -293,14 +303,17 @@ fn build_atlas(
         );
         let (atlas, image) =
             mc_render::atlas::Atlas::build(std::path::Path::new(""), std::iter::empty());
-        return (atlas, image, std::collections::HashSet::new());
+        return (atlas, image, std::collections::HashSet::new(), std::collections::HashSet::new());
     };
     let (atlas, image) = mc_render::atlas::Atlas::build(
         &assets_root,
         state_ids.iter().copied().filter_map(|id| Some((id, registry.state(id)?))),
     );
-    let non_solid = state_ids.into_iter().filter(|&id| atlas.is_solid(id) == Some(false)).collect();
-    (atlas, image, non_solid)
+    let non_solid: std::collections::HashSet<u32> =
+        state_ids.iter().copied().filter(|&id| atlas.is_solid(id) == Some(false)).collect();
+    let non_opaque: std::collections::HashSet<u32> =
+        state_ids.into_iter().filter(|&id| atlas.is_opaque(id) == Some(false)).collect();
+    (atlas, image, non_solid, non_opaque)
 }
 
 /// Prefer the chunk containing the server-confirmed spawn, then its declared

@@ -32,6 +32,10 @@ pub struct BlockRegistry {
     /// a caller opts in, so [`Self::is_solid`] keeps its old "solid unless
     /// air" behavior by default.
     non_solid: Arc<HashSet<u32>>,
+    /// IDs whose texture has real alpha variation (see
+    /// [`Self::with_non_opaque`]); empty until a caller opts in, so
+    /// [`Self::is_opaque`] defaults every ID to opaque.
+    non_opaque: Arc<HashSet<u32>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -46,7 +50,11 @@ impl BlockRegistry {
     /// An empty registry: every ID reports no name and a hashed color.
     #[must_use]
     pub fn empty() -> Self {
-        Self { states: Arc::from(Vec::new().into_boxed_slice()), non_solid: Arc::default() }
+        Self {
+            states: Arc::from(Vec::new().into_boxed_slice()),
+            non_solid: Arc::default(),
+            non_opaque: Arc::default(),
+        }
     }
 
     /// Build a registry directly from an ID-indexed name list (index = state
@@ -60,6 +68,7 @@ impl BlockRegistry {
                 .map(|name| BlockState { name: name.into_boxed_str(), properties: BTreeMap::new() })
                 .collect(),
             non_solid: Arc::default(),
+            non_opaque: Arc::default(),
         }
     }
 
@@ -85,6 +94,28 @@ impl BlockRegistry {
         !self.is_air(id) && !self.non_solid.contains(&id)
     }
 
+    /// Returns this registry with `ids` additionally marked as having a
+    /// texture with real alpha variation — `mc_render::atlas::Atlas`'s own
+    /// `is_opaque`, read straight off the resource pack's texture data (a
+    /// full cube can be solid and still not opaque: leaves' cutout gaps,
+    /// glass's transparency). IDs outside `ids` keep [`Self::is_opaque`]'s
+    /// default of opaque.
+    #[must_use]
+    pub fn with_non_opaque(mut self, ids: impl IntoIterator<Item = u32>) -> Self {
+        self.non_opaque = Arc::new(ids.into_iter().collect());
+        self
+    }
+
+    /// Whether this ID's texture fully occludes whatever is behind it: false
+    /// for any ID [`Self::with_non_opaque`] marked as having real alpha
+    /// variation. An ID this registry doesn't recognize, or one no caller
+    /// has marked non-opaque, defaults to opaque — a neighbor's shared face
+    /// should only be culled by a real, fully-covering occluder.
+    #[must_use]
+    pub fn is_opaque(&self, id: u32) -> bool {
+        !self.non_opaque.contains(&id)
+    }
+
     /// Load `<cache>/mc-rust-client/<version>/block-states.json`
     /// (`docs/WORLD_PHYSICS_ASSETS.md`). Never fails: an absent or malformed
     /// cache falls back to [`Self::empty`], since this client does not
@@ -107,7 +138,11 @@ impl BlockRegistry {
         if report.states.is_empty() {
             (!report.names.is_empty()).then(|| Self::from_names(report.names))
         } else {
-            Some(Self { states: report.states.into(), non_solid: Arc::default() })
+            Some(Self {
+                states: report.states.into(),
+                non_solid: Arc::default(),
+                non_opaque: Arc::default(),
+            })
         }
     }
 
@@ -272,6 +307,19 @@ mod tests {
         assert!(registry.is_solid(1)); // Unaffected.
         assert!(!registry.is_solid(2)); // Now walk-through.
         assert!(!registry.is_solid(0)); // Air stays non-solid either way.
+    }
+
+    #[test]
+    fn is_opaque_defaults_to_true_until_ids_are_marked_non_opaque() {
+        let registry = BlockRegistry::from_names(vec![
+            "minecraft:stone".into(),
+            "minecraft:oak_leaves".into(),
+        ]);
+        assert!(registry.is_opaque(0)); // Solid and opaque, unmarked.
+        assert!(registry.is_opaque(1)); // Not yet marked non-opaque.
+        let registry = registry.with_non_opaque([1]);
+        assert!(registry.is_opaque(0)); // Unaffected.
+        assert!(!registry.is_opaque(1)); // Solid, but its cutout texture isn't opaque.
     }
 
     #[test]
