@@ -46,12 +46,24 @@ PY
   dropped whole-tick time when overloaded. It preserves fractional time exactly,
   owns no wall clock, and never sleeps. This policy is tested separately from
   future movement/physics parity. See `FOUNDATION.md`.
-- **Done.** `physics.rs` implements `PlayerController::tick`: walk 4.317 blocks/s,
-  sprint 5.612, sneak 1.31 (wiki-exact, not the doc's earlier rounded figures), jump
-  vY 0.42, gravity 0.08/tick, vertical drag 0.98/tick, matching vanilla's numbers.
-  Horizontal acceleration (snappy on the ground, sliding in the air) is a simplified
-  two-constant model, not vanilla's slipperiness-derived formula — ice, soul sand,
-  water, ladders and slime bounce are not modeled yet. Collision is discrete
+- **Done.** `physics.rs` implements `PlayerController::tick` from publicly documented
+  per-tick constants and order (`minecraft.wiki`'s "Entity" article, cross-checked
+  against `mcpk.wiki`'s Vertical/Horizontal Movement Formulas pages) — never from
+  decompiling `client.jar` (forbidden by this file's own clean-room policy above;
+  the cached jar is compiled bytecode we use only for its legitimate resource
+  assets and, via the paired `server.jar`, the official `--reports` data generator).
+  Walk 4.317 blocks/s, sprint 5.612, sneak 1.31, jump vY 0.42, gravity 0.08/tick,
+  vertical drag 0.98/tick, horizontal drag 0.91 air / 0.546 ground (0.91 × default
+  0.6 block friction). The order matters and is easy to get backwards: a living
+  entity moves *first* using the velocity carried over from the previous tick, then
+  updates velocity (gravity, or ground/air acceleration toward walk/sprint/sneak
+  speed) for the *next* tick's move; a jump unconditionally overrides the carried
+  velocity so its tick moves the full, undecayed 0.42 — applying gravity/drag before
+  that first move (the original bug here) understates jump apex height by about a
+  third (0.83 vs. the correct, vanilla-matching ~1.2523 blocks — regression-tested).
+  Horizontal ground/air acceleration matches vanilla's per-tick constants but not
+  its slipperiness-cubed friction formula for non-default-friction blocks; ice, soul
+  sand, water, ladders and slime bounce are not modeled yet. Collision is discrete
   AABB-vs-voxel against one resolved `mc_world::Chunk` (no continuous sweep, no
   cross-chunk collision — both are fine at this milestone's single-chunk scope,
   `AI-GUIDE.md` step 8). Fully unit-tested without a renderer or network.

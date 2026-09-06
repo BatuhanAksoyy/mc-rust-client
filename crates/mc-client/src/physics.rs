@@ -7,11 +7,24 @@
 //! smooth rendering.
 //!
 //! This reproduces vanilla Java Edition's *feel* — walk/sprint/sneak speed,
-//! jump height, gravity, and solid-block collision — from the wiki-documented
-//! per-tick constants below. It is not a byte-for-byte port of
-//! `LivingEntity.travel()`: ground/air acceleration is a simplified two-constant
-//! model (real vanilla derives it from block slipperiness), and ice, water,
-//! ladders, and slime bounce are not modeled yet.
+//! jump height, gravity, and solid-block collision — from publicly documented
+//! per-tick constants and update order (`minecraft.wiki`'s "Entity" article;
+//! exact recurrence cross-checked against `mcpk.wiki`'s Vertical/Horizontal
+//! Movement Formulas pages), never from decompiling Mojang's bytecode
+//! (forbidden by this project's own clean-room policy, `AI-GUIDE.md`).
+//!
+//! The crucial, easy-to-get-backwards detail: for a living entity, each tick
+//! **moves first using the velocity carried over from the previous tick,
+//! then applies gravity, then applies drag** — the freshly updated velocity
+//! only takes effect starting *next* tick. A jump's `JUMP_VELOCITY` is an
+//! unconditional override of that carried-over value, so the tick you jump
+//! moves you the *full, undecayed* 0.42 blocks — gravity/drag only start
+//! eating into it from the following tick. Applying gravity/drag before that
+//! first move (this module's original bug) shaves off roughly a third of
+//! the jump's apex height. Ice, water, ladders, and slime bounce are not
+//! modeled yet; ground/air horizontal acceleration matches vanilla's
+//! per-tick constants but not its slipperiness-cubed friction formula for
+//! non-default-friction blocks.
 //!
 //! Collision is AABB vs. a single resolved chunk's voxel grid
 //! (`mc_world::Chunk`); coordinates are chunk-local, matching `mc_render::mesh`
@@ -36,21 +49,35 @@ pub mod constants {
     pub const SPRINT_SPEED: f32 = 5.612 / 20.0;
     /// Sneaking speed: 1.31 blocks/s.
     pub const SNEAK_SPEED: f32 = 1.31 / 20.0;
-    /// Instantaneous upward velocity applied on jump.
+    /// Instantaneous upward velocity a jump overrides the carried-over
+    /// velocity with (see the module doc's ordering note).
     pub const JUMP_VELOCITY: f32 = 0.42;
-    /// Downward acceleration applied every tick, before drag.
+    /// Downward acceleration applied every tick, after that tick's move.
     pub const GRAVITY: f32 = 0.08;
     /// Vertical velocity multiplier applied every tick, after gravity.
     pub const VERTICAL_DRAG: f32 = 0.98;
-    /// Fraction of the gap to the target horizontal speed closed per tick
-    /// while on the ground.
+    /// Horizontal velocity multiplier applied every tick while airborne.
+    pub const AIR_DRAG: f32 = 0.91;
+    /// Horizontal velocity multiplier applied every tick on the ground:
+    /// [`AIR_DRAG`] times the default block friction (0.6 — stone, dirt,
+    /// grass, ...; ice and slime have their own, unmodeled friction).
+    pub const GROUND_DRAG: f32 = AIR_DRAG * 0.6;
+    /// Flat per-tick horizontal acceleration while airborne, regardless of
+    /// walk/sprint/sneak.
     ///
-    /// Not a vanilla constant (real vanilla derives this from block
-    /// slipperiness) — tuned for "stops almost immediately on the ground,
-    /// slides in the air", vanilla's most visible feel.
-    pub const GROUND_ACCEL: f32 = 0.6;
-    /// Same, while airborne: much less control than on the ground.
-    pub const AIR_ACCEL: f32 = 0.2;
+    /// Vanilla's real, deliberately weak "air control" constant — momentum
+    /// from the ground carries into a jump; this alone barely steers it.
+    pub const AIR_ACCEL: f32 = 0.02;
+    /// Per-tick ground acceleration that reaches exactly [`WALK_SPEED`] at
+    /// equilibrium against [`GROUND_DRAG`].
+    ///
+    /// `a = v * (1 - r)`, the same relation vanilla's own wiki uses to
+    /// explain its walking constant (`0.098`, which this evaluates to).
+    pub const WALK_ACCEL: f32 = WALK_SPEED * (1.0 - GROUND_DRAG);
+    /// Same relation, for [`SPRINT_SPEED`].
+    pub const SPRINT_ACCEL: f32 = SPRINT_SPEED * (1.0 - GROUND_DRAG);
+    /// Same relation, for [`SNEAK_SPEED`].
+    pub const SNEAK_ACCEL: f32 = SNEAK_SPEED * (1.0 - GROUND_DRAG);
 }
 
 /// One tick's movement intent, decoupled from any specific input backend
@@ -103,17 +130,18 @@ impl PlayerController {
         self.position + Vec3::new(0.0, constants::EYE_HEIGHT, 0.0)
     }
 
-    /// Advance one fixed 20 TPS tick: accelerate toward the wished horizontal
-    /// velocity, apply gravity and jump, then resolve collisions against
-    /// `chunk`'s solid blocks one axis at a time.
+    /// Advance one fixed 20 TPS tick, in vanilla's real order: move by the
+    /// velocity carried over from the previous tick (a jump overrides it
+    /// first), resolve collisions, then update velocity — input
+    /// acceleration, gravity, drag — for the *next* tick's move. See the
+    /// module doc's ordering note for why this direction matters.
     pub fn tick(&mut self, input: Input, chunk: &Chunk, registry: &BlockRegistry) {
-        let speed = if input.sneak {
-            constants::SNEAK_SPEED
-        } else if input.sprint {
-            constants::SPRINT_SPEED
-        } else {
-            constants::WALK_SPEED
-        };
+        if input.jump && self.on_ground {
+            self.velocity.y = constants::JUMP_VELOCITY;
+        }
+        self.on_ground = false;
+        self.move_and_collide(chunk, registry);
+
         let mut wish = Vec3::ZERO;
         if input.forward {
             wish.z -= 1.0;
@@ -128,24 +156,40 @@ impl PlayerController {
             wish.x -= 1.0;
         }
         if wish.length_squared() > 0.0 {
-            wish = wish.normalize() * speed;
+            wish = wish.normalize();
         }
         let (sin, cos) = input.yaw.sin_cos();
-        let wished =
+        let direction =
             Vec3::new(wish.z.mul_add(-sin, wish.x * cos), 0.0, wish.z.mul_add(cos, wish.x * sin));
 
-        let accel = if self.on_ground { constants::GROUND_ACCEL } else { constants::AIR_ACCEL };
-        self.velocity.x = (wished.x - self.velocity.x).mul_add(accel, self.velocity.x);
-        self.velocity.z = (wished.z - self.velocity.z).mul_add(accel, self.velocity.z);
+        let accel = if self.on_ground {
+            if input.sneak {
+                constants::SNEAK_ACCEL
+            } else if input.sprint {
+                constants::SPRINT_ACCEL
+            } else {
+                constants::WALK_ACCEL
+            }
+        } else {
+            constants::AIR_ACCEL
+        };
+        // Horizontal: drag first (on last tick's stored velocity), *then*
+        // add this tick's acceleration — the order that actually solves to
+        // vanilla's quoted terminal-velocity relation `v = a / (1 - drag)`.
+        // Vertical is the other way around (gravity/accel, then drag): its
+        // order is fixed independently by the jump-height recurrence in the
+        // module doc, and vanilla itself applies gravity and friction
+        // through unrelated code paths, so there's no reason to expect them
+        // to share an order.
+        let horizontal_drag =
+            if self.on_ground { constants::GROUND_DRAG } else { constants::AIR_DRAG };
+        self.velocity.x *= horizontal_drag;
+        self.velocity.z *= horizontal_drag;
+        self.velocity.x = direction.x.mul_add(accel, self.velocity.x);
+        self.velocity.z = direction.z.mul_add(accel, self.velocity.z);
 
-        if input.jump && self.on_ground {
-            self.velocity.y = constants::JUMP_VELOCITY;
-        }
         self.velocity.y -= constants::GRAVITY;
         self.velocity.y *= constants::VERTICAL_DRAG;
-
-        self.on_ground = false;
-        self.move_and_collide(chunk, registry);
     }
 
     fn move_and_collide(&mut self, chunk: &Chunk, registry: &BlockRegistry) {
@@ -167,7 +211,30 @@ impl PlayerController {
         if hit {
             self.velocity.z = 0.0;
         }
+        // `move_axis` skips its collision scan entirely when `velocity.y ==
+        // 0.0` (nothing to sweep), so a player already at rest — freshly
+        // spawned standing on a block, or mid-tick after the branch above
+        // just zeroed velocity.y — would never otherwise be detected as
+        // grounded. Probe directly underfoot to cover that case.
+        if !self.on_ground {
+            self.on_ground = is_touching_ground(chunk, registry, self.position);
+        }
     }
+}
+
+/// Whether the player's footprint at `position` rests directly on a solid
+/// block, independent of velocity.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+// Chunk-local coordinates are always small.
+fn is_touching_ground(chunk: &Chunk, registry: &BlockRegistry, position: Vec3) -> bool {
+    const EPSILON: f32 = 1e-3;
+    let half = constants::HALF_WIDTH;
+    let y = (position.y - EPSILON).floor() as i32;
+    let x0 = (position.x - half).floor() as i32;
+    let x1 = (position.x + half - EPSILON).floor() as i32;
+    let z0 = (position.z - half).floor() as i32;
+    let z1 = (position.z + half - EPSILON).floor() as i32;
+    (x0..=x1).any(|x| (z0..=z1).any(|z| is_solid(chunk, registry, x, y, z)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,7 +416,12 @@ mod tests {
         }
         assert!(player.on_ground);
         assert_eq!(player.position.y.to_bits(), 1.0_f32.to_bits());
-        assert_eq!(player.velocity.y.to_bits(), 0.0_f32.to_bits());
+        // Not exactly 0: every tick ends by charging velocity.y with a fresh
+        // -GRAVITY * VERTICAL_DRAG for the next tick's move attempt, which
+        // collision then re-clamps to a standstill — same small residual
+        // real vanilla leaves on a grounded entity's stored motion.
+        let expected = -constants::GRAVITY * constants::VERTICAL_DRAG;
+        assert!((player.velocity.y - expected).abs() < 1e-6, "{}", player.velocity.y);
     }
 
     #[test]
@@ -367,6 +439,31 @@ mod tests {
         }
         assert!(player.on_ground, "should have landed again");
         assert_eq!(player.position.y.to_bits(), 1.0_f32.to_bits());
+    }
+
+    /// Regression test for the exact bug reported against this module:
+    /// applying gravity/drag before a jump's first move (instead of after)
+    /// shaves roughly a third off the apex height, so a standing jump can no
+    /// longer clear a 1-block ledge. Vanilla's well-documented apex is
+    /// ~1.2523 blocks above the takeoff point.
+    #[test]
+    fn jump_apex_matches_vanillas_documented_height() {
+        let mut player = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
+        let chunk = floor_chunk();
+        let registry = registry();
+        player.tick(still(0.0), &chunk, &registry); // Settle onto the floor first.
+        let takeoff = player.position.y;
+        player.tick(Input { jump: true, ..still(0.0) }, &chunk, &registry);
+        let mut peak = player.position.y;
+        for _ in 0..40 {
+            player.tick(still(0.0), &chunk, &registry);
+            peak = peak.max(player.position.y);
+        }
+        let apex_height = peak - takeoff;
+        assert!(
+            (apex_height - 1.2523).abs() < 0.01,
+            "apex height={apex_height} (expected ~1.2523, vanilla's documented jump height)"
+        );
     }
 
     #[test]
