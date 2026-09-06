@@ -251,11 +251,26 @@ const fn default_uv(direction: Direction, from: [f32; 3], to: [f32; 3]) -> [f32;
     }
 }
 
+/// Pairs `[u0,v0,u1,v1]`'s four corners with `face_positions`'s four
+/// vertices, in order, for `direction`.
+///
+/// `face_positions` doesn't walk the same corner first for every direction
+/// (`default_uv`'s own per-direction axis signs show as much: `Up` and
+/// `Down` disagree on which world axis increases `v`, and `North`/`East`
+/// walk their quad starting from the opposite corner `South`/`West`/`Down`
+/// do) — so a single fixed corner order can't be right for all six. Each
+/// branch below is `standard` (the order that's correct for `Down`, whose
+/// walk direction it's built from) cyclically rotated to match that
+/// direction's actual vertex order; get the rotation wrong and a uniform
+/// texture (stone, dirt) still looks fine, but anything with real
+/// structure along one axis — the grass-block overlay's top-only fringe,
+/// in particular — comes out sheared onto the wrong axis.
 const fn face_uv(direction: Direction, [u0, v0, u1, v1]: [f32; 4]) -> [[f32; 2]; 4] {
     let standard = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
     match direction {
-        Direction::Up | Direction::Down | Direction::South => standard,
-        _ => [[u1, v1], [u0, v1], [u0, v0], [u1, v0]],
+        Direction::Down | Direction::South | Direction::West => standard,
+        Direction::Up => [standard[3], standard[0], standard[1], standard[2]],
+        Direction::North | Direction::East => [standard[1], standard[2], standard[3], standard[0]],
     }
 }
 
@@ -360,7 +375,7 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, default_uv, resolve_block};
+    use super::{Direction, default_uv, face_positions, face_uv, resolve_block};
     use mc_world::BlockState;
     use std::collections::BTreeMap;
 
@@ -371,6 +386,45 @@ mod tests {
             default_uv(Direction::South, [0.25, 0.5, 0.0], [0.75, 1.0, 1.0]),
             [4.0, 0.0, 12.0, 8.0]
         );
+    }
+
+    /// `face_uv` must pair a face's UV rect with `face_positions`'s vertices
+    /// the same way for every direction: the "vertical" world axis (Y for
+    /// the four side directions, Z for `Up`/`Down`) alone decides `v`,
+    /// independent of the other in-plane axis. A rect with distinct U and V
+    /// extents (unlike `grass_block`'s own symmetric whole-texture
+    /// `[0,0,16,16]`, where a mixed-up axis is numerically invisible) makes
+    /// a violation show up as a `v` that differs between two vertices at
+    /// the same height — exactly the bug that shipped `grass_block_side`'s
+    /// sharp top-fringe/transparent-bottom split as vertical streaks
+    /// instead of a horizontal band on `North`/`East`/`West`/`Up`.
+    #[test]
+    #[allow(clippy::float_cmp)] // Coordinates here are exact 0.0/1.0 corners.
+    fn face_uv_pairs_with_face_positions_along_the_same_vertical_axis_everywhere() {
+        let rect = [0.0, 0.0, 16.0, 8.0]; // Non-square: u0,v0,u1,v1.
+        for direction in Direction::ALL {
+            let positions = face_positions(direction, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+            let uv = face_uv(direction, rect);
+            let vertical = |point: [f32; 3]| {
+                if matches!(direction, Direction::Up | Direction::Down) {
+                    point[2]
+                } else {
+                    point[1]
+                }
+            };
+            for a in 0..4 {
+                for b in 0..4 {
+                    if vertical(positions[a]) == vertical(positions[b]) {
+                        assert_eq!(
+                            uv[a][1], uv[b][1],
+                            "{direction:?}: vertices {a} and {b} share a height but got \
+                             different v ({:?} vs {:?})",
+                            uv[a], uv[b]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A state's collision follows its resolved model's own
