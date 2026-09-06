@@ -26,10 +26,13 @@ struct Uniforms {
 /// Two pipelines share one shader/bind group, differing only in depth
 /// writes: `pipeline` (opaque + cutout — every real or debug-color block,
 /// lava included) writes depth normally, while `translucent_pipeline`
-/// (water only, `Mesh::translucent`) uses a stable depth test and also writes
-/// depth. This gives overlapping water surfaces a deterministic nearest-
-/// surface winner instead of allowing camera motion to reorder coplanar
-/// alpha blends frame to frame.
+/// (water only, `Mesh::translucent`) tests depth without writing it, so a
+/// water quad blends against whatever real geometry is already there
+/// instead of letting its own depth write block another translucent
+/// surface (or more water) drawn behind it — visible before as noisy,
+/// moiré-like overdraw wherever several water quads overlapped in screen
+/// space (a shoreline's many differently-sloped blocks, an underwater
+/// drop-off's stacked side faces).
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -102,7 +105,7 @@ impl Renderer {
             &device,
             config.format,
             &bind_group_layout,
-            true,
+            false,
             "chunk-translucent-pipeline",
         );
 
@@ -262,8 +265,10 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..self.vertex_count, 0..1);
-            // Same pass, same depth buffer, drawn after: water is depth-tested
-            // and depth-written to make overlapping surfaces stable.
+            // Same pass, same depth buffer, drawn after: water tests against
+            // the opaque/cutout geometry's depth without writing its own, so
+            // it blends against what's really there instead of its own
+            // depth write blocking another translucent surface behind it.
             pass.set_pipeline(&self.translucent_pipeline);
             pass.set_vertex_buffer(0, self.translucent_vertex_buffer.slice(..));
             pass.draw(0..self.translucent_vertex_count, 0..1);
@@ -393,8 +398,7 @@ fn create_bind_group(
 /// Build one render pipeline against the shared bind group layout.
 /// `depth_write_enabled` is the only thing that ever differs between the
 /// opaque/cutout pipeline and the translucent one (see `Renderer`'s doc
-/// comment) — same shader and blend state; the translucent pass writes depth
-/// to prevent temporal water z-fighting.
+/// comment) — same shader, same blend state, same everything else.
 fn create_pipeline(
     device: &wgpu::Device,
     surface_format: wgpu::TextureFormat,

@@ -133,11 +133,15 @@ Milestones:
    animated texture in this atlas. Water's real alpha (baked into
    `water_still` itself, ~0.7) draws through its own pass (`Mesh::translucent`,
    `Renderer`'s `translucent_pipeline`): same shader and bind group as
-   everything else, drawn after the opaque/cutout pass in the same render
-   pass. The translucent pipeline writes depth too: this gives overlapping
-   water surfaces a deterministic nearest-surface winner instead of allowing
-   camera motion to reorder coplanar alpha blends frame to frame. Lava draws
-   through the ordinary opaque/cutout pass instead — its
+   everything else, but depth writes off, drawn after the opaque/cutout pass
+   in the same render pass so it still tests against real depth without ever
+   writing its own — the initial single-pipeline version wrote depth for
+   translucent water same as everything else, which was fine for one water
+   quad over opaque ground but let one water quad's write block another
+   translucent surface's blend behind it, visible as moiré-like overdraw
+   wherever several water quads overlapped in screen space (a shoreline's
+   many differently-sloped blocks, an underwater drop-off's stacked side
+   faces). Lava draws through the ordinary opaque/cutout pass instead — its
    texture has no real alpha variation, so it needs no special treatment.
    Still needs a visual diff test against real screenshots.
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
