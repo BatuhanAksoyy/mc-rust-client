@@ -8,14 +8,15 @@
 //!
 //! This reproduces vanilla Java Edition's *feel* — walk/sprint/sneak speed,
 //! jump height, gravity, and solid-block collision — from publicly
-//! documented per-tick constants and update order, never from decompiling
-//! Mojang's bytecode (forbidden by this project's own clean-room policy,
-//! `AI-GUIDE.md`). Sources: `minecraft.wiki`'s "Entity" article for the
-//! vertical recurrence, and `prismarine-physics`
+//! documented per-tick constants and clean-room behavioral reference to
+//! named 26.2 symbols (no Mojang implementation text is copied). Sources:
+//! `minecraft.wiki`'s "Entity" article for the vertical recurrence and
+//! `prismarine-physics`
 //! (<https://github.com/PrismarineJS/prismarine-physics>, MIT-licensed,
 //! independently reimplemented from observed behavior for the Mineflayer
-//! bot ecosystem — not Mojang code) for the exact horizontal constants and
-//! update order, cross-checked against known real walk/sprint speeds.
+//! bot ecosystem — not Mojang code), cross-checked against
+//! `KeyboardInput`, `LocalPlayer#modifyInput`, `Entity#moveRelative`, and
+//! `LivingEntity#travelInAir` @ 26.2 plus known real walk/sprint speeds.
 //!
 //! Two easy-to-get-backwards ordering details, both confirmed against those
 //! sources:
@@ -28,13 +29,10 @@
 //!   only starts eating into it the tick after. Getting this backwards (this
 //!   module's original bug) shaves roughly a third off the jump's apex
 //!   height.
-//! - **Horizontal**: the opposite order — this tick's input acceleration is
-//!   added *before* moving, and drag is applied *after*, for next tick. Each
-//!   ground acceleration constant is solved from `a = v * (1 - r) / r` so it
-//!   still reaches exactly the documented walk/sprint/sneak speed at
-//!   equilibrium against that order (a naive `a = v * (1 - r)`, matching the
-//!   *other* order, undershoots top speed's ramp-up and feels sluggish to
-//!   accelerate even though it eventually reaches the right top speed).
+//! - **Horizontal**: keyboard input is shaped first, acceleration is added
+//!   before moving, and friction is applied after moving for the next tick.
+//!   Acceleration is the movement-speed attribute multiplied by shaped input,
+//!   not a value derived backward from terminal speed.
 //!
 //! Ice, water, ladders, and slime bounce are not modeled yet; ground/air
 //! horizontal acceleration matches vanilla's per-tick constants but not its
@@ -57,12 +55,14 @@ pub mod constants {
     pub const HEIGHT: f32 = 1.8;
     /// Eye height above the feet position, standing.
     pub const EYE_HEIGHT: f32 = 1.62;
-    /// Walking speed: 4.317 blocks/s.
-    pub const WALK_SPEED: f32 = 4.317 / 20.0;
-    /// Sprinting speed: 5.612 blocks/s.
-    pub const SPRINT_SPEED: f32 = 5.612 / 20.0;
-    /// Sneaking speed: 1.31 blocks/s.
-    pub const SNEAK_SPEED: f32 = 1.31 / 20.0;
+    /// Base player movement-speed attribute on the ground.
+    pub const MOVEMENT_SPEED: f32 = 0.1;
+    /// Sprinting adds 30% to the movement-speed attribute.
+    pub const SPRINT_MULTIPLIER: f32 = 1.3;
+    /// Local-player input attenuation applied before movement.
+    pub const INPUT_SCALE: f32 = 0.98;
+    /// Default sneaking-speed attribute, applied to input.
+    pub const SNEAK_INPUT_SCALE: f32 = 0.3;
     /// Instantaneous upward velocity a jump overrides the carried-over
     /// velocity with (see the module doc's ordering note).
     pub const JUMP_VELOCITY: f32 = 0.42;
@@ -82,20 +82,11 @@ pub mod constants {
     /// Vanilla's real, deliberately weak "air control" constant — momentum
     /// from the ground carries into a jump; this alone barely steers it.
     pub const AIR_ACCEL: f32 = 0.02;
-    /// Per-tick ground acceleration that reaches exactly [`WALK_SPEED`] at
-    /// equilibrium against [`GROUND_DRAG`].
-    ///
-    /// Solved for this module's accel-before-move-before-drag order:
-    /// `a = v(1-r)/r`.
-    ///
-    /// The simpler `a = v(1-r)` form belongs to the *other* order — accel
-    /// added after drag — and would still reach the right top speed here,
-    /// just via a visibly slower ramp-up.
-    pub const WALK_ACCEL: f32 = WALK_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
-    /// Same relation, for [`SPRINT_SPEED`].
-    pub const SPRINT_ACCEL: f32 = SPRINT_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
-    /// Same relation, for [`SNEAK_SPEED`].
-    pub const SNEAK_ACCEL: f32 = SNEAK_SPEED * (1.0 - GROUND_DRAG) / GROUND_DRAG;
+    /// Steady straight-line walking displacement on default ground.
+    pub const WALK_DISPLACEMENT: f32 = MOVEMENT_SPEED * INPUT_SCALE / (1.0 - GROUND_DRAG);
+    /// Steady straight-line sprinting displacement on default ground.
+    pub const SPRINT_DISPLACEMENT: f32 =
+        MOVEMENT_SPEED * SPRINT_MULTIPLIER * INPUT_SCALE / (1.0 - GROUND_DRAG);
 }
 
 /// One tick's movement intent, decoupled from any specific input backend
@@ -177,24 +168,22 @@ impl PlayerController {
         if input.left {
             wish.x -= 1.0;
         }
-        if wish.length_squared() > 0.0 {
+        let input_scale =
+            constants::INPUT_SCALE * if input.sneak { constants::SNEAK_INPUT_SCALE } else { 1.0 };
+        wish *= input_scale;
+        if wish.length_squared() > 1.0 {
             wish = wish.normalize();
         }
         let (sin, cos) = input.yaw.sin_cos();
         let direction =
             Vec3::new(wish.z.mul_add(-sin, wish.x * cos), 0.0, wish.z.mul_add(cos, wish.x * sin));
 
+        let sprinting = input.sprint && input.forward && !input.sneak;
+        let sprint_scale = if sprinting { constants::SPRINT_MULTIPLIER } else { 1.0 };
         let (accel, horizontal_drag) = if self.on_ground {
-            let accel = if input.sneak {
-                constants::SNEAK_ACCEL
-            } else if input.sprint {
-                constants::SPRINT_ACCEL
-            } else {
-                constants::WALK_ACCEL
-            };
-            (accel, constants::GROUND_DRAG)
+            (constants::MOVEMENT_SPEED * sprint_scale, constants::GROUND_DRAG)
         } else {
-            (constants::AIR_ACCEL, constants::AIR_DRAG)
+            (constants::AIR_ACCEL * sprint_scale, constants::AIR_DRAG)
         };
         self.velocity.x = direction.x.mul_add(accel, self.velocity.x);
         self.velocity.z = direction.z.mul_add(accel, self.velocity.z);
@@ -483,7 +472,28 @@ mod tests {
     }
 
     #[test]
-    fn walking_forward_approaches_walk_speed_and_moves_negative_z() {
+    fn walking_uses_java_input_acceleration_before_friction() {
+        let mut player = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
+        let chunk = floor_chunk();
+        let registry = registry();
+        player.tick(still(0.0), &chunk, &registry);
+
+        let start = player.position.z;
+        player.tick(Input { forward: true, ..still(0.0) }, &chunk, &registry);
+        let first = player.position.z - start;
+        player.tick(Input { forward: true, ..still(0.0) }, &chunk, &registry);
+        let second = player.position.z - start - first;
+
+        let acceleration = constants::MOVEMENT_SPEED * constants::INPUT_SCALE;
+        assert!((first + acceleration).abs() < 1e-6, "first displacement={first}");
+        assert!(
+            acceleration.mul_add(1.0 + constants::GROUND_DRAG, second).abs() < 1e-6,
+            "second displacement={second}"
+        );
+    }
+
+    #[test]
+    fn walking_forward_approaches_walk_displacement_and_moves_negative_z() {
         let mut player = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
         let chunk = floor_chunk();
         let registry = registry();
@@ -492,16 +502,46 @@ mod tests {
         // z in 0..16) and lose ground contact there, which is correct given
         // the single-chunk collision scope (module doc) but would no longer
         // be exercising steady per-tick ground acceleration.
+        let mut previous_z = player.position.z;
         for _ in 0..20 {
+            previous_z = player.position.z;
             player.tick(Input { forward: true, ..still(0.0) }, &chunk, &registry);
         }
         assert!(player.velocity.z < 0.0);
         assert!(
-            (-player.velocity.z - constants::WALK_SPEED).abs() < 0.01,
-            "velocity.z={}",
-            player.velocity.z
+            (previous_z - player.position.z - constants::WALK_DISPLACEMENT).abs() < 0.001,
+            "last displacement={}",
+            previous_z - player.position.z
         );
         assert!(player.position.z < 8.0);
+    }
+
+    #[test]
+    fn diagonal_and_sneaking_input_match_java_square_shaping() {
+        let chunk = floor_chunk();
+        let registry = registry();
+        let mut diagonal = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
+        let mut sneaking = diagonal;
+        diagonal.tick(still(0.0), &chunk, &registry);
+        sneaking.tick(still(0.0), &chunk, &registry);
+
+        diagonal.tick(Input { forward: true, right: true, ..still(0.0) }, &chunk, &registry);
+        sneaking.tick(
+            Input { forward: true, right: true, sneak: true, ..still(0.0) },
+            &chunk,
+            &registry,
+        );
+
+        assert!(
+            std::f32::consts::FRAC_1_SQRT_2.mul_add(-0.1, diagonal.position.x - 8.0).abs() < 1e-6
+        );
+        assert!(
+            std::f32::consts::FRAC_1_SQRT_2.mul_add(0.1, diagonal.position.z - 8.0).abs() < 1e-6
+        );
+        let sneak_axis =
+            constants::MOVEMENT_SPEED * constants::INPUT_SCALE * constants::SNEAK_INPUT_SCALE;
+        assert!((sneaking.position.x - 8.0 - sneak_axis).abs() < 1e-6);
+        assert!((sneaking.position.z - 8.0 + sneak_axis).abs() < 1e-6);
     }
 
     #[test]
@@ -510,11 +550,14 @@ mod tests {
         let registry = registry();
         let mut walker = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
         let mut sprinter = PlayerController::spawn(Vec3::new(8.0, 1.0, 8.0));
-        for _ in 0..40 {
+        for _ in 0..20 {
             walker.tick(Input { forward: true, ..still(0.0) }, &chunk, &registry);
             sprinter.tick(Input { forward: true, sprint: true, ..still(0.0) }, &chunk, &registry);
         }
         assert!(sprinter.velocity.z.abs() > walker.velocity.z.abs());
+        assert!(
+            (-sprinter.velocity.z / -walker.velocity.z - constants::SPRINT_MULTIPLIER).abs() < 1e-3
+        );
     }
 
     #[test]

@@ -19,8 +19,9 @@ use crate::{
     tick::TickScheduler,
 };
 
-/// Radians of yaw/pitch turned per unit of raw mouse motion.
-const MOUSE_SENSITIVITY: f32 = 0.0025;
+/// Radians turned per raw mouse unit at Java Edition's default 100%
+/// sensitivity: `(0.5 * 0.6 + 0.2)^3 * 8 * 0.15` degrees.
+const MOUSE_SENSITIVITY: f32 = std::f32::consts::PI / 1_200.0;
 /// Keeps the look direction from flipping over at the poles.
 const MAX_PITCH: f32 = 89_f32.to_radians();
 /// Vertical field of view.

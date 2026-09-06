@@ -49,11 +49,12 @@ PY
 - **Done.** `physics.rs` implements `PlayerController::tick` from publicly documented
   per-tick constants and order — `minecraft.wiki`'s "Entity" article for the vertical
   recurrence, `prismarine-physics` (MIT-licensed, independently reimplemented from
-  observed behavior for the Mineflayer bot ecosystem) for the exact horizontal
-  constants and order — never from decompiling `client.jar` (forbidden by this
-  file's own clean-room policy above; the cached jar is compiled bytecode we use
-  only for its legitimate resource assets and, via the paired `server.jar`, the
-  official `--reports` data generator).
+  observed behavior for the Mineflayer bot ecosystem), and clean-room behavioral
+  reference to `net.minecraft.client.player.KeyboardInput`,
+  `net.minecraft.client.player.LocalPlayer#modifyInput`,
+  `net.minecraft.world.entity.Entity#moveRelative`, and
+  `net.minecraft.world.entity.LivingEntity#travelInAir` @ 26.2. No Mojang source
+  text or implementation is copied.
   Walk 4.317 blocks/s, sprint 5.612, sneak 1.31, jump vY 0.42, gravity 0.08/tick,
   vertical drag 0.98/tick, horizontal drag 0.91 air / 0.546 ground (0.91 × default
   0.6 block friction). Vertical and horizontal deliberately run in *opposite*
@@ -62,14 +63,15 @@ PY
   unconditionally overrides the carried velocity, so its tick moves the full,
   undecayed 0.42 (applying gravity/drag before that first move, the module's
   original bug, understated jump apex height by about a third: 0.83 vs. the
-  correct, vanilla-matching ~1.2523 blocks — regression-tested). Horizontal adds
-  this tick's ground/air acceleration *before* moving and applies drag *after*;
-  each ground acceleration constant is solved from `a = v(1-r)/r` (not the simpler
-  `a = v(1-r)`, which belongs to the other order and would reach the same top speed
-  but visibly slower) so it still reaches exactly its documented top speed. Matches
-  vanilla's per-tick constants but not its slipperiness-cubed friction formula for
-  non-default-friction blocks; ice, soul sand, water, ladders and slime bounce are
-  not modeled yet. Collision is discrete AABB-vs-voxel against one resolved
+  correct, vanilla-matching ~1.2523 blocks — regression-tested). Horizontal scales
+  straight keyboard input to 0.98 (diagonal input reaches the unit-square boundary),
+  applies the 0.3 sneaking-speed attribute, adds movement-speed acceleration (0.1
+  walk / 0.13 sprint on default ground; 0.02 / 0.026 in air) before moving, then
+  applies 0.546 default-ground or 0.91 air drag. Tests assert the first two
+  displacements as well as steady speed so a wrong recurrence cannot hide behind
+  the same terminal velocity. Non-default block friction, sneak ledge prevention,
+  water, ladders and slime bounce are not modeled yet. Collision is discrete
+  AABB-vs-voxel against one resolved
   `mc_world::Chunk` (no continuous sweep, no cross-chunk collision — both are fine
   at this milestone's single-chunk scope, `AI-GUIDE.md` step 8). Fully unit-tested
   without a renderer or network.
