@@ -3,7 +3,7 @@
 
 use std::{path::PathBuf, process::ExitCode, time::Duration};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(about = "Minecraft protocol 776 headless client")]
@@ -64,6 +64,9 @@ enum Command {
         /// Chunk radius requested from the server (the managed server caps this at 4).
         #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(2..=8))]
         render_distance: u8,
+        /// Add an unsaved client-only fluid ramp for renderer testing.
+        #[arg(long, value_enum)]
+        fluid_demo: Option<FluidDemoArg>,
     },
     /// Query server status and measure ping latency without logging in.
     Status {
@@ -79,6 +82,23 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FluidDemoArg {
+    Water,
+    Lava,
+    Both,
+}
+
+impl From<FluidDemoArg> for mc_client::fluid_demo::Kind {
+    fn from(value: FluidDemoArg) -> Self {
+        match value {
+            FluidDemoArg::Water => Self::Water,
+            FluidDemoArg::Lava => Self::Lava,
+            FluidDemoArg::Both => Self::Both,
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     match Cli::parse().command {
@@ -88,8 +108,8 @@ async fn main() -> ExitCode {
         Command::Local { pumpkin, session, port, startup_seconds, check } => {
             run_local(pumpkin, session, port, startup_seconds, check).await
         }
-        Command::Render { host, port, name, timeout_ms, render_distance } => {
-            run_render(host, port, name, timeout_ms, render_distance).await
+        Command::Render { host, port, name, timeout_ms, render_distance, fluid_demo } => {
+            run_render(host, port, name, timeout_ms, render_distance, fluid_demo).await
         }
         Command::Status { host, port, timeout_ms } => run_status(host, port, timeout_ms).await,
     }
@@ -194,6 +214,7 @@ async fn run_render(
     name: String,
     timeout_ms: u64,
     render_distance: u8,
+    fluid_demo: Option<FluidDemoArg>,
 ) -> ExitCode {
     let mut joined = match mc_client::join::connect_with_render_distance(
         &host,
@@ -221,9 +242,20 @@ async fn run_render(
         return ExitCode::FAILURE;
     }
     let registry = mc_world::BlockRegistry::load_cached("26.2");
-    let chunks: Vec<_> = joined.chunks.iter().map(mc_world::Chunk::from_level).collect();
+    let mut chunks: Vec<_> = joined.chunks.iter().map(mc_world::Chunk::from_level).collect();
     let origin = select_origin_chunk(&chunks, joined.spawn.x, joined.spawn.z, joined.center_chunk)
         .expect("a nonempty chunk batch always selects an origin");
+    if let Some(demo) = fluid_demo {
+        match mc_client::fluid_demo::inject(&mut chunks, origin, &registry, demo.into()) {
+            Ok(y) => eprintln!(
+                "Injected unsaved {demo:?} fluid demo at local Y={y}; this does not modify the server world."
+            ),
+            Err(error) => {
+                eprintln!("cannot create fluid demo: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let origin_chunk = chunks
         .iter()
         .find(|chunk| chunk.position == origin)

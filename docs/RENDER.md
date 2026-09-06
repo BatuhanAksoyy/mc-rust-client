@@ -146,6 +146,16 @@ Milestones:
 4. Entity/block-entity pass stub, UI (egui/wgpu) for debug HUD (FPS, ms, draw calls).
 5. Perf: `criterion` benches for mesher; `tracy`/`puffin` scopes; target 60 FPS @ 12 chunks on M1/GTX 1060 class.
 
+## Development fluid fixture
+
+`mc-client render --fluid-demo water|lava|both` injects a short, supported
+level-0-through-7 fluid ramp into the client-side copy of the origin chunk
+before atlas construction and meshing. It requires the cached 26.2 block-state
+registry, never sends a packet, never changes the server world, and disappears
+when the window closes. This fixture exists solely to exercise still/flowing
+geometry and UVs until the continuous Play loop, inventory, bucket use, server
+block updates, and fluid ticks are implemented; it is not presented as gameplay.
+
 ## Rules
 
 - All GPU code behind `Renderer` trait for headless tests (`wgpu --features headless` or mock).
