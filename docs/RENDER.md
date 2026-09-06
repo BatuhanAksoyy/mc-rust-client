@@ -104,27 +104,32 @@ Milestones:
    Fluids (water/lava, `mesh::fluid`) have no blockstate/model JSON at all —
    Java renders them from internal logic, not resource-pack data — so they
    bypass `atlas::model` entirely: `fluid::level` reads the `level` property,
-   `fluid::own_height`/`corner_height` follow the fluid-height and
-   corner-blending convention long publicly documented and independently
-   reimplemented by non-Mojang tools, and
+   `fluid::own_height`/`corner_height` follow Java's weighted fluid-height
+   and corner-blending behavior (near-full samples carry extra weight,
+   non-solid empty cells contribute zero, and solid cells do not contribute),
+   and
    `mesh_fluid_block` bakes a real sloped top (flat bottom, side faces
    following the slope) instead of a flat full cube. Fluid surfaces use a
    small inward boundary bias so they cannot be coplanar with adjacent solid
    faces; this was clean-room cross-checked against
    `net.minecraft.client.renderer.block.FluidRenderer#tesselate @ 26.2`.
-   `Atlas::fluid_uv` packs
-   the two fixed `water_still`/`lava_still` textures (their real vanilla
-   paths, unconditionally — no model ever references them) into the same
-   atlas; water is tinted with `BlockRegistry::color`'s flat blue (its
+   `Atlas::fluid_uv` packs each fluid's fixed still and flowing textures
+   (their real vanilla paths, unconditionally — no model ever references
+   them) into the same atlas. A level top uses the still texture; a moving
+   top derives its direction from the four cardinal fluid levels and rotates
+   a centered patch of the flowing texture accordingly; vertical sides use
+   the flowing texture's upper half with height-aware V coordinates. This
+   behavior was clean-room cross-checked against
+   `net.minecraft.client.renderer.block.FluidRenderer#tesselate @ 26.2` and
+   `net.minecraft.world.level.material.FlowingFluid#getFlow @ 26.2`. Water is
+   tinted with `BlockRegistry::color`'s flat blue (its
    texture is grayscale, meant for a multiply, same as grass), lava isn't
    (its texture already carries real color). `mc-client` also marks both
    fluids non-solid (`build_atlas`), so a player passes through rather than
    colliding with an invisible wall — real swimming physics (buoyancy,
-   speed, breath) is separate, later work. Animation (both textures are
-   32-frame flipbooks) and the flowing texture's directional alignment are
-   not implemented yet — only the first frame of the *still* texture is used
-   on every face, same simplification already applied to every other
-   animated texture in this atlas. Water's real alpha (baked into
+   speed, breath) is separate, later work. Animation (these textures are
+   vertical flipbooks) is not implemented yet — the first frame is used,
+   same as every other animated texture in this atlas. Water's real alpha (baked into
    `water_still` itself, ~0.7) draws through its own pass (`Mesh::translucent`,
    `Renderer`'s `translucent_pipeline`): same shader and bind group as
    everything else, but depth writes off, drawn after the opaque/cutout pass

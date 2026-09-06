@@ -188,50 +188,89 @@ fn mesh_fluid_block(
     y: i32,
     z: i32,
     block: [f32; 3],
-    uv: [f32; 4],
+    uvs: crate::atlas::FluidUvs,
     tint: [f32; 3],
 ) {
-    // The cell at (dx, dy, dz) from this block, if it's the *same* fluid:
-    // its level, and whether that same fluid also fills the cell directly
-    // above it. `None` for a different block, air, or an unresolved
-    // chunk-edge cell — the same "only a real neighbor counts" rule
-    // `neighbor_block`'s other callers already follow.
-    let same = |dx: i32, dy: i32, dz: i32| -> Option<(u8, bool)> {
-        let id = neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)?;
-        let state = registry.state(id)?;
-        (FluidKind::of(state) == Some(kind)).then_some(())?;
-        let level = fluid::level(state);
-        let above = neighbor_block(by_position, chunk, x + dx, y + dy + 1, z + dz)
+    let is_same = |dx: i32, dy: i32, dz: i32| -> bool {
+        neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)
             .and_then(|id| registry.state(id))
-            .is_some_and(|state| FluidKind::of(state) == Some(kind));
-        Some((level, above))
+            .is_some_and(|state| FluidKind::of(state) == Some(kind))
     };
+    // Java's corner blend distinguishes a same-fluid height, replaceable
+    // empty space (zero), and solid/missing space (no contribution).
+    let height = |dx: i32, dz: i32| -> Option<f32> {
+        let id = neighbor_block(by_position, chunk, x + dx, y, z + dz)?;
+        let state = registry.state(id)?;
+        if FluidKind::of(state) == Some(kind) {
+            Some(if is_same(dx, 1, dz) { 1.0 } else { fluid::own_height(fluid::level(state)) })
+        } else if registry.is_solid(id) {
+            None
+        } else {
+            Some(0.0)
+        }
+    };
+    let self_height = height(0, 0).unwrap_or(1.0);
     let corners = fluid::Corners {
-        nw: fluid::corner_height([same(0, 0, 0), same(-1, 0, 0), same(0, 0, -1), same(-1, 0, -1)]),
-        ne: fluid::corner_height([same(0, 0, 0), same(1, 0, 0), same(0, 0, -1), same(1, 0, -1)]),
-        se: fluid::corner_height([same(0, 0, 0), same(1, 0, 0), same(0, 0, 1), same(1, 0, 1)]),
-        sw: fluid::corner_height([same(0, 0, 0), same(-1, 0, 0), same(0, 0, 1), same(-1, 0, 1)]),
+        nw: fluid::corner_height(self_height, height(-1, 0), height(0, -1), height(-1, -1)),
+        ne: fluid::corner_height(self_height, height(1, 0), height(0, -1), height(1, -1)),
+        se: fluid::corner_height(self_height, height(1, 0), height(0, 1), height(1, 1)),
+        sw: fluid::corner_height(self_height, height(-1, 0), height(0, 1), height(-1, 1)),
     };
+    // Accumulate the horizontal surface flow from the four cardinal cells.
+    // Empty space only contributes when this fluid continues one block below
+    // it; solid blocks and different fluids do not affect the vector.
+    let own_height = neighbor_block(by_position, chunk, x, y, z)
+        .and_then(|id| registry.state(id))
+        .map_or(1.0, |state| fluid::own_height(fluid::level(state)));
+    let mut flow_x = 0.0;
+    let mut flow_z = 0.0;
+    for (dx, dz, step_x, step_z) in
+        [(0, -1, 0.0_f32, -1.0_f32), (0, 1, 0.0, 1.0), (-1, 0, -1.0, 0.0), (1, 0, 1.0, 0.0)]
+    {
+        let Some(neighbor) = neighbor_block(by_position, chunk, x + dx, y, z + dz) else {
+            continue;
+        };
+        let Some(state) = registry.state(neighbor) else { continue };
+        let neighbor_kind = FluidKind::of(state);
+        let distance = if neighbor_kind == Some(kind) {
+            own_height - fluid::own_height(fluid::level(state))
+        } else if neighbor_kind.is_none() && !registry.is_solid(neighbor) {
+            neighbor_block(by_position, chunk, x + dx, y - 1, z + dz)
+                .and_then(|id| registry.state(id))
+                .filter(|state| FluidKind::of(state) == Some(kind))
+                .map_or(0.0, |state| {
+                    own_height - (fluid::own_height(fluid::level(state)) - 8.0 / 9.0)
+                })
+        } else {
+            0.0
+        };
+        flow_x = step_x.mul_add(distance, flow_x);
+        flow_z = step_z.mul_add(distance, flow_z);
+    }
+    let flow = fluid::flow_direction(flow_x, flow_z);
     // A face is visible against a real, fully-covering occluder just like a
     // solid block's own faces (`occludes`) — with one fluid-only addition:
     // never against the *same* fluid either, since two parts of one
     // continuous body of water/lava share no visible boundary.
     let visible = |dx: i32, dy: i32, dz: i32| -> bool {
-        if same(dx, dy, dz).is_some() {
+        if is_same(dx, dy, dz) {
             return false;
         }
         neighbor_block(by_position, chunk, x + dx, y + dy, z + dz)
             .is_none_or(|neighbor| !occludes(registry, atlas, neighbor, (-dx, -dy, -dz)))
     };
+    let minimum_top = corners.nw.min(corners.ne).min(corners.se).min(corners.sw);
     let faces = fluid::Faces {
-        up: visible(0, 1, 0),
+        // A full block above only hides a flush surface. Source water's
+        // 8/9-height top remains visible in the small gap below that block.
+        up: !is_same(0, 1, 0) && (minimum_top < 1.0 || visible(0, 1, 0)),
         down: visible(0, -1, 0),
         north: visible(0, 0, -1),
         south: visible(0, 0, 1),
         east: visible(1, 0, 0),
         west: visible(-1, 0, 0),
     };
-    fluid::push_fluid_block(vertices, block, corners, faces, uv, tint);
+    fluid::push_fluid_block(vertices, block, corners, faces, flow, uvs, tint);
 }
 
 fn push_baked_quad(

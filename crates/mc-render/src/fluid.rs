@@ -6,9 +6,9 @@
 //! here — there simply is no `blockstates/water.json`); fluid rendering is
 //! Java-internal logic, not resource-pack data. This instead hand-implements
 //! the fluid-height and corner-blending convention long publicly documented
-//! and independently reimplemented by countless non-Mojang tools (wiki
-//! articles, `prismarine-js`, other clean-room voxel engines) — never
-//! decompiled source.
+//! and independently reimplemented by non-Mojang tools. Exact observable
+//! behavior is clean-room cross-checked against the 26.2 symbols named in
+//! `docs/RENDER.md`; no Mojang code or mappings are copied here.
 //!
 //! The pure per-block math lives here, unit-tested without a `Chunk`;
 //! `mesh.rs` supplies the actual neighbor lookups and turns the result into
@@ -16,7 +16,7 @@
 
 use mc_world::BlockState;
 
-use crate::mesh::Vertex;
+use crate::{atlas::FluidUvs, mesh::Vertex};
 
 /// Which fluid a resolved block state is, if it's a fluid at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,34 +83,46 @@ pub fn own_height(level: u8) -> f32 {
     if level >= 8 { 1.0 } else { f32::from(8 - level) / 9.0 }
 }
 
-/// One of a fluid block's 4 top corners.
+/// Blend the four cell heights meeting at one fluid-surface corner.
 ///
-/// `cells` is the up-to-4 cells that meet at that corner (this block, the
-/// two orthogonal neighbors in the corner's quadrant, and the diagonal
-/// one), each `Some((level, fluid_above))` when that cell holds the *same*
-/// fluid — a different block, air, or an unresolved chunk-edge cell
-/// contributes nothing, same as `mesh_chunk`'s own face culling only ever
-/// consulting a real neighbor — and `fluid_above` records whether that same
-/// fluid also fills the cell directly above it.
-///
-/// A corner with any contributing cell that has fluid above it sits flush
-/// with the block's top: there's no visible surface there at all (the fluid
-/// continues upward, or this is the middle of a waterfall). Otherwise the
-/// corner is the average `own_height` of however many cells actually
-/// contributed (at least the block asking, in real use, so this never
-/// divides by zero).
+/// `self_height` is always this fluid cell. Each side/diagonal is `Some(0)`
+/// for replaceable empty space, `Some(height)` for the same fluid, or `None`
+/// for a solid/missing cell. Near-full samples receive extra weight so a
+/// source surface stays broad and only rolls down near its edge. The diagonal
+/// participates only when at least one adjoining side contains fluid.
 #[must_use]
-#[allow(clippy::cast_precision_loss)] // `cells` has 4 entries; the count fits exactly in f32.
-pub fn corner_height(cells: [Option<(u8, bool)>; 4]) -> f32 {
-    let mut any_above = false;
-    let mut total = 0.0_f32;
-    let mut count: u32 = 0;
-    for (own_level, above) in cells.into_iter().flatten() {
-        any_above |= above;
-        total += own_height(own_level);
-        count += 1;
+pub fn corner_height(
+    self_height: f32,
+    side_a: Option<f32>,
+    side_b: Option<f32>,
+    diagonal: Option<f32>,
+) -> f32 {
+    if [side_a, side_b].into_iter().flatten().any(|height| height >= 1.0) {
+        return 1.0;
     }
-    if any_above || count == 0 { 1.0 } else { total / count as f32 }
+    let mut weighted_height = 0.0;
+    let mut weight = 0.0;
+    let mut add = |height: f32| {
+        if height < 0.0 {
+            return;
+        }
+        let sample_weight = if height >= 0.8 { 10.0 } else { 1.0 };
+        weighted_height = height.mul_add(sample_weight, weighted_height);
+        weight += sample_weight;
+    };
+    if side_a.is_some_and(|height| height > 0.0) || side_b.is_some_and(|height| height > 0.0) {
+        if diagonal.is_some_and(|height| height >= 1.0) {
+            return 1.0;
+        }
+        if let Some(height) = diagonal {
+            add(height);
+        }
+    }
+    add(self_height);
+    for height in [side_a, side_b].into_iter().flatten() {
+        add(height);
+    }
+    if weight == 0.0 { 1.0 } else { weighted_height / weight }
 }
 
 /// The block's 4 top-corner heights, in `(nw, ne, se, sw)` order (`x`/`z`
@@ -126,6 +138,15 @@ pub struct Corners {
     pub se: f32,
     /// South-west corner (`x=0, z=1`) height.
     pub sw: f32,
+}
+
+/// Normalize an accumulated horizontal fluid-flow vector, or return `None`
+/// when it has no horizontal component and the top should use the still
+/// sprite.
+#[must_use]
+pub fn flow_direction(x: f32, z: f32) -> Option<[f32; 2]> {
+    let length = x.hypot(z);
+    (length > 1e-6).then_some([x / length, z / length])
 }
 
 /// Whether each of the block's 6 faces should render.
@@ -162,7 +183,8 @@ pub fn push_fluid_block(
     block: [f32; 3],
     corners: Corners,
     faces: Faces,
-    uv_rect: [f32; 4],
+    flow: Option<[f32; 2]>,
+    uvs: FluidUvs,
     tint: [f32; 3],
 ) {
     // Keep fluid surfaces just inside their cell. Adjacent block faces live
@@ -174,9 +196,34 @@ pub fn push_fluid_block(
     let Corners { nw, ne, se, sw } = corners;
     let [nw, ne, se, sw] = [nw, ne, se, sw].map(|height| (height - INSET).max(0.0));
     let bottom = if faces.down { INSET } else { 0.0 };
-    let [u0, v0, u1, v1] = uv_rect;
-    let uv = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
-    let mut push = |positions: [[f32; 3]; 4], brightness: f32| {
+    let map_uv = |rect: [f32; 4], [u, v]: [f32; 2]| {
+        let [u0, v0, u1, v1] = rect;
+        [u.mul_add(u1 - u0, u0), v.mul_add(v1 - v0, v0)]
+    };
+    let still = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]].map(|uv| map_uv(uvs.still, uv));
+    let top_uv = if let Some([flow_x, flow_z]) = flow {
+        let angle = flow_z.atan2(flow_x) - std::f32::consts::FRAC_PI_2;
+        let (sin, cos) = angle.sin_cos();
+        let (s, c) = (sin * 0.25, cos * 0.25);
+        [
+            [0.5 - c - s, 0.5 - c + s],
+            [0.5 - c + s, 0.5 + c + s],
+            [0.5 + c + s, 0.5 + c - s],
+            [0.5 + c - s, 0.5 - c - s],
+        ]
+        .map(|uv| map_uv(uvs.flowing, uv))
+    } else {
+        still
+    };
+    let side_uv = |left_height: f32, right_height: f32| {
+        [
+            map_uv(uvs.flowing, [0.0, (1.0 - left_height) * 0.5]),
+            map_uv(uvs.flowing, [0.5, (1.0 - right_height) * 0.5]),
+            map_uv(uvs.flowing, [0.5, 0.5]),
+            map_uv(uvs.flowing, [0.0, 0.5]),
+        ]
+    };
+    let mut push = |positions: [[f32; 3]; 4], uv: [[f32; 2]; 4], brightness: f32| {
         let shaded = tint.map(|channel| channel * brightness);
         let world = positions.map(|[x, y, z]| [block[0] + x, block[1] + y, block[2] + z]);
         for &index in &[0, 1, 2, 0, 2, 3] {
@@ -184,44 +231,62 @@ pub fn push_fluid_block(
         }
     };
     if faces.up {
-        push([[0.0, nw, 0.0], [0.0, sw, 1.0], [1.0, se, 1.0], [1.0, ne, 0.0]], 1.0);
+        push([[0.0, nw, 0.0], [0.0, sw, 1.0], [1.0, se, 1.0], [1.0, ne, 0.0]], top_uv, 1.0);
     }
     if faces.down {
-        push([[0.0, bottom, 0.0], [1.0, bottom, 0.0], [1.0, bottom, 1.0], [0.0, bottom, 1.0]], 0.4);
+        push(
+            [[0.0, bottom, 0.0], [1.0, bottom, 0.0], [1.0, bottom, 1.0], [0.0, bottom, 1.0]],
+            still,
+            0.4,
+        );
     }
     if faces.north {
-        push([[0.0, bottom, INSET], [0.0, nw, INSET], [1.0, ne, INSET], [1.0, bottom, INSET]], 0.8);
+        push(
+            [[0.0, nw, INSET], [1.0, ne, INSET], [1.0, bottom, INSET], [0.0, bottom, INSET]],
+            side_uv(nw, ne),
+            0.8,
+        );
     }
     if faces.south {
         push(
             [
-                [0.0, bottom, 1.0 - INSET],
-                [1.0, bottom, 1.0 - INSET],
                 [1.0, se, 1.0 - INSET],
                 [0.0, sw, 1.0 - INSET],
+                [0.0, bottom, 1.0 - INSET],
+                [1.0, bottom, 1.0 - INSET],
             ],
+            side_uv(se, sw),
             0.8,
         );
     }
     if faces.east {
         push(
             [
-                [1.0 - INSET, bottom, 0.0],
                 [1.0 - INSET, ne, 0.0],
                 [1.0 - INSET, se, 1.0],
                 [1.0 - INSET, bottom, 1.0],
+                [1.0 - INSET, bottom, 0.0],
             ],
+            side_uv(ne, se),
             0.6,
         );
     }
     if faces.west {
-        push([[INSET, bottom, 0.0], [INSET, bottom, 1.0], [INSET, sw, 1.0], [INSET, nw, 0.0]], 0.6);
+        push(
+            [[INSET, sw, 1.0], [INSET, nw, 0.0], [INSET, bottom, 0.0], [INSET, bottom, 1.0]],
+            side_uv(sw, nw),
+            0.6,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FluidKind, corner_height, level, own_height};
+    use super::{
+        Corners, Faces, FluidKind, corner_height, flow_direction, level, own_height,
+        push_fluid_block,
+    };
+    use crate::atlas::FluidUvs;
     use mc_world::BlockState;
     use std::collections::BTreeMap;
 
@@ -262,30 +327,67 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn corner_height_averages_only_contributing_cells() {
-        // Just the block itself (source, no neighbors of the same fluid).
-        assert_eq!(corner_height([Some((0, false)), None, None, None]), 8.0 / 9.0);
-        // Two same-fluid cells at different levels average their own heights.
-        let mixed = corner_height([Some((0, false)), Some((4, false)), None, None]);
-        assert_eq!(mixed, f32::midpoint(8.0 / 9.0, 4.0 / 9.0));
+    fn corner_height_weights_near_full_fluid_and_classifies_neighbors() {
+        let close = |actual: f32, expected: f32| assert!((actual - expected).abs() < 1e-6);
+        let source = 8.0 / 9.0;
+        close(corner_height(source, None, None, None), source);
+        // The source receives weight 10; the lower neighbor receives 1.
+        close(corner_height(source, Some(4.0 / 9.0), None, None), 28.0 / 33.0);
+        // Replaceable empty space contributes zero; solid space contributes nothing.
+        close(corner_height(source, Some(0.0), None, None), 80.0 / 99.0);
+        close(corner_height(source, None, None, None), source);
     }
 
     #[test]
     #[allow(clippy::float_cmp)] // 1.0 is exact, not an accumulated computation.
-    fn corner_height_is_flush_when_any_contributor_has_fluid_above() {
-        // A nearly-empty cell that's fed from above is *not* sloped down to
-        // its own low height — the real surface is higher up, or this is
-        // mid-waterfall, either way not a visible slope at this corner.
-        assert_eq!(corner_height([Some((7, true)), None, None, None]), 1.0);
+    fn corner_height_is_flush_when_an_adjacent_column_has_fluid_above() {
+        assert_eq!(corner_height(1.0 / 9.0, Some(1.0), None, None), 1.0);
+        assert_eq!(corner_height(1.0 / 9.0, Some(0.5), None, Some(1.0)), 1.0);
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // 1.0 is exact, not an accumulated computation.
-    fn corner_height_defaults_to_full_with_no_contributing_cells() {
-        // Shouldn't happen in real use (the block itself always contributes),
-        // but a corner with nothing to average from should never divide by
-        // zero or render as an invisible zero-height sliver.
-        assert_eq!(corner_height([None, None, None, None]), 1.0);
+    fn diagonal_only_contributes_when_reachable_from_a_fluid_side() {
+        let close = |actual: f32, expected: f32| assert!((actual - expected).abs() < 1e-6);
+        let self_height = 4.0 / 9.0;
+        close(corner_height(self_height, None, None, Some(8.0 / 9.0)), self_height);
+        close(corner_height(self_height, Some(2.0 / 9.0), None, Some(8.0 / 9.0)), 86.0 / 108.0);
+    }
+
+    #[test]
+    fn horizontal_flow_is_normalized_and_zero_flow_is_still() {
+        assert_eq!(flow_direction(0.0, 0.0), None);
+        let [x, z] = flow_direction(2.0, 0.0).unwrap();
+        assert!((x - 1.0).abs() < 1e-6);
+        assert!(z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn level_top_uses_still_uvs_and_sloped_top_uses_flowing_uvs() {
+        let uvs = FluidUvs { still: [0.0, 0.0, 0.25, 0.25], flowing: [0.5, 0.5, 1.0, 1.0] };
+        let faces =
+            Faces { up: true, down: false, north: false, south: false, east: false, west: false };
+        let mut vertices = Vec::new();
+        push_fluid_block(
+            &mut vertices,
+            [0.0; 3],
+            Corners { nw: 0.5, ne: 0.5, se: 0.5, sw: 0.5 },
+            faces,
+            None,
+            uvs,
+            [1.0; 3],
+        );
+        assert!(vertices.iter().all(|vertex| vertex.uv[0] <= 0.25 && vertex.uv[1] <= 0.25));
+
+        vertices.clear();
+        push_fluid_block(
+            &mut vertices,
+            [0.0; 3],
+            Corners { nw: 1.0, sw: 1.0, ne: 0.5, se: 0.5 },
+            faces,
+            Some([1.0, 0.0]),
+            uvs,
+            [1.0; 3],
+        );
+        assert!(vertices.iter().all(|vertex| vertex.uv[0] >= 0.5 && vertex.uv[1] >= 0.5));
     }
 }

@@ -3,6 +3,7 @@
 
 use mc_protocol::chunk::{ChunkSection, LevelChunk, LightData, Palette, PalettedContainer};
 use mc_render::atlas::Atlas;
+use mc_render::fluid::FluidKind;
 use mc_render::mesh::{mesh_chunk, mesh_chunks};
 use mc_world::{BlockRegistry, BlockState, Chunk, ChunkPos};
 
@@ -166,7 +167,7 @@ fn a_solid_but_non_opaque_neighbor_does_not_hide_the_solid_face_beside_it() {
 
 /// Fluids have no blockstate/model JSON at all (`fluid.rs`), so this needs a
 /// real `Atlas` (built against a temp resource root with just the fixed
-/// `water_still` texture) rather than `empty_atlas`, which never resolves
+/// water texture pair) rather than `empty_atlas`, which never resolves
 /// `fluid_uv` and would fall the block back to the plain debug-color cube.
 #[test]
 fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
@@ -179,6 +180,9 @@ fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
     image::RgbaImage::from_pixel(16, 16, image::Rgba([180, 180, 180, 180]))
         .save(root.join("textures/block/water_still.png"))
         .unwrap();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([160, 160, 160, 180]))
+        .save(root.join("textures/block/water_flow.png"))
+        .unwrap();
     let atlas = Atlas::build(&root, std::iter::empty()).0;
     std::fs::remove_dir_all(&root).ok();
 
@@ -190,7 +194,7 @@ fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
         "minecraft:water".to_owned(),
     ]);
     let mut indices = vec![0; 4096];
-    indices[0] = 4; // water at (0,0,0), no same-fluid neighbors.
+    indices[8 + 8 * 16] = 4; // Water away from chunk edges, with four real air neighbors.
     let chunk = chunk_with(indices);
     let mesh = mesh_chunk(&chunk, &registry, &atlas);
 
@@ -199,10 +203,10 @@ fn an_isolated_water_source_emits_all_six_faces_sloped_to_the_source_height() {
     // pass — `Renderer`, `RENDER.md` milestone 3).
     assert!(mesh.vertices.is_empty());
     assert_eq!(mesh.translucent.len(), 6 * 6);
-    // With no same-fluid neighbor to blend with, all 4 top corners use the
-    // source height minus the deliberate depth-fighting inset.
+    // The near-full source receives weight 10 and its two adjacent air cells
+    // each contribute zero with weight 1: (10 * 8/9) / 12 = 20/27.
     let top_heights: Vec<f32> = mesh.translucent[..6].iter().map(|v| v.position[1]).collect();
-    let expected = 8.0 / 9.0 - 0.001;
+    let expected = 20.0 / 27.0 - 0.001;
     assert!(top_heights.iter().all(|&h| (h - expected).abs() < 1e-6), "{top_heights:?}");
 }
 
@@ -216,6 +220,9 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
     std::fs::create_dir_all(root.join("textures/block")).unwrap();
     image::RgbaImage::from_pixel(16, 16, image::Rgba([180, 180, 180, 180]))
         .save(root.join("textures/block/water_still.png"))
+        .unwrap();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([160, 160, 160, 180]))
+        .save(root.join("textures/block/water_flow.png"))
         .unwrap();
     let atlas = Atlas::build(&root, std::iter::empty()).0;
     std::fs::remove_dir_all(&root).ok();
@@ -235,8 +242,8 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
         water("4"),
     ]);
     let mut indices = vec![0; 4096];
-    indices[0] = 1; // source water at (0,0,0)
-    indices[1] = 2; // level-4 water at (1,0,0), its east neighbor
+    indices[8 + 8 * 16] = 1; // Source water at (8,0,8).
+    indices[9 + 8 * 16] = 2; // Level-4 water at its east neighbor.
     let chunk = chunk_with(indices);
     let mesh = mesh_chunk(&chunk, &registry, &atlas);
 
@@ -246,6 +253,12 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
     assert_eq!(mesh.translucent.len(), (5 + 5) * 6);
 
     let top_vertices = mesh.translucent[..6].iter().chain(mesh.translucent[30..36].iter());
+    let [u0, v0, u1, v1] = atlas.fluid_uv(FluidKind::Water).unwrap().flowing;
+    assert!(
+        top_vertices.clone().all(|vertex| {
+            (u0..=u1).contains(&vertex.uv[0]) && (v0..=v1).contains(&vertex.uv[1])
+        })
+    );
     let top_y_at = |x: f32| -> Vec<f32> {
         top_vertices
             .clone()
@@ -257,9 +270,9 @@ fn adjacent_water_of_different_levels_blends_the_shared_corners_and_hides_the_sh
         assert!(!values.is_empty());
         assert!(values.iter().all(|&h| (h - expected).abs() < 1e-6), "{values:?} != {expected}");
     };
-    close(&top_y_at(0.0), 8.0 / 9.0 - 0.001); // Source's own far edge.
-    close(&top_y_at(1.0), f32::midpoint(8.0 / 9.0, 4.0 / 9.0) - 0.001); // Shared edge.
-    close(&top_y_at(2.0), 4.0 / 9.0 - 0.001); // Level-4's own far edge.
+    close(&top_y_at(8.0), 20.0 / 27.0 - 0.001); // Source edge beside two air cells.
+    close(&top_y_at(9.0), 28.0 / 39.0 - 0.001); // Weighted shared edge.
+    close(&top_y_at(10.0), 4.0 / 27.0 - 0.001); // Level-4 edge beside two air cells.
 }
 
 #[test]

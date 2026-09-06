@@ -21,10 +21,10 @@ use model::{ModelRefs, resolve_block};
 
 pub use image::RgbaImage;
 
-/// One block texture is always 16×16 in vanilla's base resource pack. A
-/// resource pack's own animated textures are taller (stacked frames); we
-/// only ever read the first frame (see [`load_first_frame`]).
-const TILE: u32 = 16;
+/// Packed atlas cell size. Vanilla block/still-fluid frames are 16×16 while
+/// flowing-fluid frames are 32×32; 16px art is nearest-neighbor doubled so
+/// both retain exact pixel edges in one fixed grid.
+const TILE: u32 = 32;
 
 /// One reusable, resource-model-authored block quad.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +56,15 @@ pub struct BakedModel {
     pub opaque: bool,
 }
 
+/// Atlas coordinates for one fluid's stationary and moving surface sprites.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FluidUvs {
+    /// Full still-sprite rectangle.
+    pub still: [f32; 4],
+    /// Full flowing-sprite rectangle.
+    pub flowing: [f32; 4],
+}
+
 /// Block name → resolved face textures.
 ///
 /// Also carries a reserved solid-white texel for blocks this atlas didn't
@@ -65,11 +74,11 @@ pub struct BakedModel {
 pub struct Atlas {
     models: HashMap<u32, BakedModel>,
     white_uv: [f32; 4],
-    /// `block/water_still`'s atlas rect, if the resource pack had it (see
+    /// Water's still/flowing atlas rects, if the resource pack had both (see
     /// [`Self::fluid_uv`]).
-    water_uv: Option<[f32; 4]>,
-    /// `block/lava_still`'s atlas rect, same fallback rule as `water_uv`.
-    lava_uv: Option<[f32; 4]>,
+    water_uv: Option<FluidUvs>,
+    /// Lava's still/flowing atlas rects, same fallback rule as `water_uv`.
+    lava_uv: Option<FluidUvs>,
 }
 
 impl Atlas {
@@ -113,10 +122,10 @@ impl Atlas {
         }))
     }
 
-    /// `kind`'s still texture's atlas rect, `None` when the resource pack
-    /// didn't have it (same absent-asset fallback as everything else here).
+    /// `kind`'s still and flowing texture rectangles, `None` when the resource
+    /// pack didn't have both (same absent-asset fallback as everything else).
     #[must_use]
-    pub const fn fluid_uv(&self, kind: crate::fluid::FluidKind) -> Option<[f32; 4]> {
+    pub const fn fluid_uv(&self, kind: crate::fluid::FluidKind) -> Option<FluidUvs> {
         match kind {
             crate::fluid::FluidKind::Water => self.water_uv,
             crate::fluid::FluidKind::Lava => self.lava_uv,
@@ -173,10 +182,16 @@ fn load_texture(assets_root: &Path, texture: &str) -> Option<RgbaImage> {
 
 fn load_first_frame(path: &Path) -> Option<RgbaImage> {
     let image = image::open(path).ok()?.to_rgba8();
-    if image.width() != TILE || image.height() < TILE {
+    let frame_size = image.width();
+    if !matches!(frame_size, 16 | 32) || image.height() < frame_size {
         return None;
     }
-    Some(image::imageops::crop_imm(&image, 0, 0, TILE, TILE).to_image())
+    let first = image::imageops::crop_imm(&image, 0, 0, frame_size, frame_size).to_image();
+    Some(if frame_size == TILE {
+        first
+    } else {
+        image::imageops::resize(&first, TILE, TILE, image::imageops::FilterType::Nearest)
+    })
 }
 
 /// Whether every pixel in `image` is fully opaque (alpha 255) — a plain
@@ -287,8 +302,14 @@ fn pack(assets_root: &Path, refs: &HashMap<u32, ModelRefs>) -> (Atlas, RgbaImage
         models.insert(*id, BakedModel { quads, solid: model_refs.solid, opaque });
     }
 
-    let water_uv = tile_index.get(FLUID_TEXTURES[0]).copied().map(uv_of);
-    let lava_uv = tile_index.get(FLUID_TEXTURES[1]).copied().map(uv_of);
+    let fluid_uv = |still: &str, flowing: &str| {
+        Some(FluidUvs {
+            still: uv_of(*tile_index.get(still)?),
+            flowing: uv_of(*tile_index.get(flowing)?),
+        })
+    };
+    let water_uv = fluid_uv(FLUID_TEXTURES[0], FLUID_TEXTURES[1]);
+    let lava_uv = fluid_uv(FLUID_TEXTURES[2], FLUID_TEXTURES[3]);
     (Atlas { models, white_uv: uv_of(white_index), water_uv, lava_uv }, atlas_image)
 }
 
@@ -311,11 +332,12 @@ fn covers_boundary(positions: [[f32; 3]; 4], face: (i32, i32, i32)) -> bool {
         })
 }
 
-/// Fixed vanilla asset paths for the two fluids' still texture (`fluid.rs`).
+/// Fixed vanilla asset paths for both fluids' still and flowing textures.
 /// No resource-pack data points at these — there's no model to reference
 /// them from — so `pack` loads them by this hardcoded path instead, the same
 /// way it already reserves a fixed white texel for the debug-color fallback.
-const FLUID_TEXTURES: [&str; 2] = ["block/water_still", "block/lava_still"];
+const FLUID_TEXTURES: [&str; 4] =
+    ["block/water_still", "block/water_flow", "block/lava_still", "block/lava_flow"];
 
 #[cfg(test)]
 mod tests {
@@ -425,7 +447,7 @@ mod tests {
     }
 
     /// Fluids have no blockstate/model JSON at all (`fluid.rs`), so `pack`
-    /// must load their two fixed texture paths unconditionally — not as a
+    /// must load their fixed texture paths unconditionally — not as a
     /// side effect of resolving any block state.
     #[test]
     fn fluid_uv_resolves_the_fixed_texture_paths_when_present() {
@@ -434,14 +456,16 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        let write_texture = |relative: &str| {
+        let write_texture = |relative: &str, width: u32, height: u32| {
             let path = root.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            super::RgbaImage::from_pixel(16, 16, image::Rgba([180, 180, 180, 180]))
+            super::RgbaImage::from_pixel(width, height, image::Rgba([180, 180, 180, 180]))
                 .save(path)
                 .unwrap();
         };
-        write_texture("textures/block/water_still.png"); // No lava_still: exercises the `None` side too.
+        write_texture("textures/block/water_still.png", 16, 32);
+        // Flowing sprites use 32px square frames in the pinned vanilla pack.
+        write_texture("textures/block/water_flow.png", 32, 64);
 
         let (atlas, _) = Atlas::build(&root, std::iter::empty());
         std::fs::remove_dir_all(&root).ok();
@@ -507,14 +531,14 @@ mod tests {
         let leaves = id_of("minecraft:oak_leaves");
         assert_eq!(atlas.occludes_face(leaves, (0, 0, -1)), Some(false));
         // Fluids never resolve via `lookup` (no blockstate/model JSON), but
-        // the real `water_still`/`lava_still` textures should still load.
+        // the real still/flowing texture pairs should still load.
         assert!(
             atlas.fluid_uv(crate::fluid::FluidKind::Water).is_some(),
-            "failed to bake water_still"
+            "failed to bake water textures"
         );
         assert!(
             atlas.fluid_uv(crate::fluid::FluidKind::Lava).is_some(),
-            "failed to bake lava_still"
+            "failed to bake lava textures"
         );
     }
 }
