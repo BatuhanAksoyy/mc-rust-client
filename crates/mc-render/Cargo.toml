@@ -23,3 +23,4 @@ winit = "0.30.13"
 
 [dev-dependencies]
 mc-protocol = { path = "../mc-protocol" }
+wgpu = { version = "30.0.1", features = ["noop"] }
