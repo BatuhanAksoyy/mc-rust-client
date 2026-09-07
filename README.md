@@ -31,28 +31,33 @@ scripts/            # shell helpers (fetch only to cache dir, never into repo)
 3. Never paste Mojang source. Re-implement from specs + observed behavior.
 4. Every push to `main` must pass `cargo fmt --check`, `clippy -D warnings`, `test`, `deny`, `audit`.
 
-## Quick start (does not download game files into repo)
+## Launch locally
+
+Requires Python 3 and the Rust toolchain. In two terminals, from this directory:
 
 ```sh
-cargo run -p mc-client -- status localhost --port 25565 --timeout-ms 5000
-cargo run -p mc-client -- local --pumpkin /path/to/pumpkin --session /outside/repo/session --check
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo xtask verify-manifest --version 26.2   # prints pinned metadata (placeholder)
-cargo xtask fetch-reference --help           # cache instructions (placeholder)
+./launch-server
+# Wait for server readiness, then in the second terminal:
+./launch-client
 ```
 
-The status command prints server JSON to stdout and ping latency to stderr;
-failures return a nonzero exit code. It needs a reachable Java Edition server
-with status enabled, but no account or assets. It does not log into the world.
+On Windows use `python launch-server` and `python launch-client`.
+The server downloads and verifies the pinned Pumpkin executable into the current
+working directory's `.data/bin/`, saving its world and logs in `.data/server/`.
+Downloads are reused. Stop the server with Ctrl-C to save. No Java is required.
+Both scripts build in release mode and accept `--help`; pass `--port 25566` to
+both to change ports. `./launch-server --check` verifies startup and shutdown.
 
-The `local` command manages the pinned Pumpkin server without Java. Remove
-`--check` to keep it running until Ctrl-C. The executable must be downloaded
-separately; its release checksum is verified before launch. World data is kept
-outside the repository. This currently verifies server startup/status/shutdown;
-the client does not yet join or render a playable world. See
-[singleplayer setup](docs/SINGLEPLAYER.md).
+Run `./download-assets` once before launching for real block textures (Windows:
+`python download-assets`). Setup requires Python 3 and Java matching Minecraft
+26.2; it downloads verified archives and generates the block-state registry in
+`.data`. Run it and `launch-client` from the same working directory. The client
+launcher automatically uses the completed local asset cache.
+
+The client opens the current initial-world renderer with movement. Continuous
+chunk streaming and block interaction remain unfinished. Existing optional
+texture caches are used; without them the client displays debug colors.
+See [singleplayer setup](docs/SINGLEPLAYER.md) for details.
 
 Implemented: bounded signed protocol primitives, incremental frames and zlib,
 Handshake/Status/Ping, and a deterministic 20 TPS scheduler with bounded catch-up.
