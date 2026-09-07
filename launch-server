@@ -1,6 +1,0 @@
-#!/usr/bin/env python3
-"""Download and launch the pinned local server in CWD/.data."""
-from scripts.launch import entry
-
-if __name__ == '__main__':
-    raise SystemExit(entry('server'))

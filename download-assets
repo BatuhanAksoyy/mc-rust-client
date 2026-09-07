@@ -1,6 +1,0 @@
-#!/usr/bin/env python3
-"""Prepare local block resources for launch-client."""
-from scripts.assets import entry
-
-if __name__ == '__main__':
-    raise SystemExit(entry())
