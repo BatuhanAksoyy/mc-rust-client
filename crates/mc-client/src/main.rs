@@ -34,7 +34,7 @@ enum Command {
         /// Path to the pinned Pumpkin executable.
         #[arg(long)]
         pumpkin: PathBuf,
-        /// New or previously managed session directory outside any Git checkout.
+        /// Managed session directory outside Git checkouts or under .data.
         #[arg(long)]
         session: PathBuf,
         /// Local TCP port.

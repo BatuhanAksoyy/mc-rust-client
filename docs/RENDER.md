@@ -161,3 +161,12 @@ block updates, and fluid ticks are implemented; it is not presented as gameplay.
 - All GPU code behind `Renderer` trait for headless tests (`wgpu --features headless` or mock).
 - Shaders in WGSL, formatted, reviewed. No `unsafe` except inside `wgpu` as required (workspace forbids `unsafe_code` — use `#[allow]` locally with SAFETY comment if ever needed).
 - Screenshots as test artifacts only, never commit Mojang textures.
+
+## Empty mesh passes — protocol 776
+
+SPEC: opaque and translucent mesh halves may independently be empty, including
+both halves before upload or after clearing a mesh. Skip buffer slicing, binding
+and drawing for a half whose current vertex count is zero, even if its buffer
+retains capacity from an earlier upload. Missing asset caches commonly produce
+opaque debug geometry with no translucent vertices; this must render normally.
+Regression coverage uses wgpu's no-op device without a window or physical GPU.

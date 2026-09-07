@@ -113,3 +113,23 @@ This is exactly the category of file this project's clean-room policy already pe
 (`AI-GUIDE.md`'s "reference by URL+version+symbol only" is about *source*, not the game's
 own public resource-file format): no Java, no decompilation, no mappings — plain JSON and
 PNGs Mojang ships for every resource pack to read.
+
+## Local asset setup script — protocol 776
+
+SPEC: `./download-assets` (Windows: `python download-assets`) prepares
+`CWD/.data/mc-rust-client/26.2/`. Python 3 and Java matching the pinned version
+metadata are required for setup. The script verifies the pinned version metadata
+and client/server SHA-1 digests, reuses valid archives, extracts only `assets/`
+resources (never Java classes), and runs the server's public `--reports` data
+generator in a temporary directory under `.data`. Its block report becomes the
+renderer-compatible `block-states.json`, indexed by numeric state ID. Failed
+setup must not publish partial registry JSON; temporary downloads are removed.
+No decompilation, mappings, or external asset-index objects are needed by the
+current block renderer. All downloaded/generated files remain ignored runtime data.
+
+After successful setup, `./launch-client` points `XDG_CACHE_HOME` at `CWD/.data`
+for the child process, so both texture and registry loaders use this cache on
+Linux, macOS, and Windows. When no complete local cache exists, preserve the
+existing system-cache behavior. Run both scripts from the same working directory.
+Setup can be rerun to repair extracted resources and regenerate the registry.
+Java is only needed during setup, not for Pumpkin or the Rust client.

@@ -69,3 +69,9 @@ below. Declared future-phase dependencies are added when their code lands.
 
 - Pasting decompiled methods, hardcoding packet IDs from memory, adding Bevy/extra deps "just in case",
   committing `client.jar` or textures to make tests pass (use synthetic fixtures + cache).
+
+Local convenience launchers: see `SINGLEPLAYER.md` §Launch scripts. Server runtime
+files may live in the ignored `.data` directory as explicitly requested; never commit them.
+
+Asset setup in ignored `.data`: `download-assets`, specified in
+`WORLD_PHYSICS_ASSETS.md` §Local asset setup script.

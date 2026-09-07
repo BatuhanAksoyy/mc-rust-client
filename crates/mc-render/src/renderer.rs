@@ -9,6 +9,9 @@ use winit::window::Window;
 
 use crate::mesh::{Mesh, Vertex};
 
+#[cfg(test)]
+mod tests;
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[repr(C)]
@@ -261,16 +264,22 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            if let Some(vertices) = vertex_slice(&self.vertex_buffer, self.vertex_count) {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, vertices);
+                pass.draw(0..self.vertex_count, 0..1);
+            }
             // Same pass, same depth buffer, drawn after: water tests against
             // the opaque/cutout geometry's depth without writing its own, so
             // it blends against what's really there instead of its own
             // depth write blocking another translucent surface behind it.
-            pass.set_pipeline(&self.translucent_pipeline);
-            pass.set_vertex_buffer(0, self.translucent_vertex_buffer.slice(..));
-            pass.draw(0..self.translucent_vertex_count, 0..1);
+            if let Some(vertices) =
+                vertex_slice(&self.translucent_vertex_buffer, self.translucent_vertex_count)
+            {
+                pass.set_pipeline(&self.translucent_pipeline);
+                pass.set_vertex_buffer(0, vertices);
+                pass.draw(0..self.translucent_vertex_count, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(surface_texture);
