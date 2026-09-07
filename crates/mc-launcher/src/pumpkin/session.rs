@@ -16,8 +16,15 @@ pub(super) fn prepare(directory: &Path, port: u16) -> Result<(PathBuf, File), Pu
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
         .canonicalize()?;
-    if parent.ancestors().any(|path| path.join(".git").exists()) {
-        return Err(PumpkinError::InvalidSession("session must be outside a Git checkout"));
+    if parent.ancestors().any(|path| {
+        path.join(".git").exists()
+            && !parent
+                .strip_prefix(path)
+                .is_ok_and(|relative| relative.components().any(|part| part.as_os_str() == ".data"))
+    }) {
+        return Err(PumpkinError::InvalidSession(
+            "session must be outside a Git checkout or under .data",
+        ));
     }
     let directory = parent.join(name);
     let new = match fs::create_dir(&directory) {

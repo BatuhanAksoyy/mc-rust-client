@@ -157,3 +157,17 @@ async fn unexpected_exit_is_not_reported_as_a_save() {
     .unwrap();
     assert!(matches!(child.shutdown(Duration::from_secs(1)).await, Err(PumpkinError::Exit(_))));
 }
+
+#[test]
+fn checkout_data_session_can_restart_but_nested_checkout_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join(".git"), "gitdir: worktree").unwrap();
+    let data = root.path().join(".data");
+    fs::create_dir(&data).unwrap();
+    let path = data.join("server");
+    let (_, lock) = session::prepare(&path, 25565).unwrap();
+    drop(lock);
+    assert!(session::prepare(&path, 25565).is_ok());
+    fs::create_dir(data.join(".git")).unwrap();
+    assert!(session::prepare(&data.join("other"), 25565).is_err());
+}

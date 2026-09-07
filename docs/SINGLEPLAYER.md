@@ -17,7 +17,7 @@ The launcher verifies an explicitly supplied executable against the release's
 SHA-256 digest, creates a managed session directory, writes local-only settings,
 and owns the child process. The client probes readiness with its existing
 Handshake/Status/Ping path and checks protocol 776. All world data stays under
-the session directory outside a Git checkout. A session lock prevents concurrent
+the session directory outside a Git checkout or inside its ignored `.data` directory. A session lock prevents concurrent
 managed launches. An existing unmanaged directory is never adopted.
 
 SPEC: settings are launcher-owned and regenerated at every launch. The world
@@ -41,8 +41,8 @@ starts the server, verifies protocol/status, and keeps it running until Ctrl-C.
 `--check` stops after readiness, for smoke testing. This is a headless integration
 command; playable joining/rendering is subsequent client work.
 
-Download the executable for your platform from the pinned release above, outside
-this repository. On macOS/Linux make the downloaded file executable with
+The launch script below downloads the executable automatically. For manual setup,
+download the executable for your platform from the pinned release above. On macOS/Linux make the downloaded file executable with
 `chmod u+x /path/to/pumpkin`. The launcher rejects other versions or modified
 binaries. Supported release assets: macOS ARM64, Linux x86_64/ARM64 (glibc),
 Windows x86_64/ARM64. Intel macOS is not supplied by this release.
@@ -94,3 +94,28 @@ CI matrix; platform-specific process-group setup is compiled there.
 No performance optimization is claimed: launch-time executable hashing and
 filesystem setup do not run in the render or simulation loop. The client polls
 readiness/exit at bounded intervals; there is no new game-server implementation.
+
+## Launch scripts — protocol 776
+
+SPEC: `launch-server` downloads the pinned platform executable to the invoking
+working directory's `.data/bin/`, verifies SHA-256 before atomic installation,
+and reuses verified downloads. It builds the release client and delegates server
+configuration, readiness, locking and graceful Ctrl-C shutdown to `mc-client local`.
+The persistent session is `.data/server/`; no Java or vanilla files are required.
+Inside a Git checkout, sessions are permitted only below a `.data` path component.
+An existing session's ownership and symlink checks still apply.
+
+Run `./launch-server` in one terminal; once ready, run `./launch-client` in another.
+Both require Python 3 and the repository's Rust toolchain; first server launch also
+requires network access to GitHub. On Windows use `python launch-server` and
+`python launch-client`. Linux requires glibc; supported architectures are listed above.
+Scripts locate the source checkout independently of the invoking working directory.
+`--help` lists forwarded client options without downloading or building anything.
+For example, use `./launch-server --check` for a startup/shutdown smoke test,
+or pass `--port 25566` to both scripts. The client accepts a hostname (default
+localhost), `--name`, and `--render-distance` as supported by `mc-client render`.
+
+The client uses existing optional texture/registry caches, falling back to debug
+colors when absent. These scripts do not download Mojang assets. Rendering and
+movement cover the initial loaded world only; streaming and block interaction
+remain separate work. No runtime performance change is claimed.
